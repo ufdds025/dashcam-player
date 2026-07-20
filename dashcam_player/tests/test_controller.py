@@ -159,3 +159,56 @@ class TestValidateExportTimes:
         controller._capture_end_frame = -1
         s, e, err = controller.validate_export_times("", "")
         assert err == "請先設定開始與結束標記，或輸入時間範圍（hh:mm:ss）"
+
+
+# ============================================================
+# Worker → PlaybackManager → Controller 信號轉發鏈（regression）
+# ============================================================
+
+
+class TestSignalRelayChain:
+    """確保 VideoWorker 輸出信號確實接到 PlaybackManager，
+    否則 video_loaded / frame_ready 永遠不會觸發（Phase 4 重構後曾漏接）。
+    """
+
+    def test_frame_relay(self, qapp):
+        from dashcam_player.core.controller import Controller
+
+        ctrl = Controller()
+        received: list = []
+        ctrl.frame_ready.connect(lambda f, i: received.append((f, i)))
+
+        import numpy as np
+
+        frame = np.zeros((10, 10, 3), dtype=np.uint8)
+        ctrl.worker.frame_ready.emit(frame, 7)
+
+        assert len(received) == 1
+        assert received[0][1] == 7
+        assert ctrl.current_frame is frame
+
+    def test_video_info_relay(self, qapp):
+        from dashcam_player.core.controller import Controller
+        from dashcam_player.models.video_info import VideoInfo
+
+        ctrl = Controller()
+        loaded: list = []
+        ctrl.video_loaded.connect(loaded.append)
+
+        info = VideoInfo(path="x.mp4", fps=30.0, frame_count=900, duration=30.0)
+        ctrl.worker.video_info_ready.emit(info)
+
+        assert len(loaded) == 1
+        assert ctrl.video_info is info
+        assert ctrl.total_frames == 900
+
+    def test_play_finished_relay(self, qapp):
+        from dashcam_player.core.controller import Controller
+
+        ctrl = Controller()
+        finished: list = []
+        ctrl.play_finished.connect(lambda: finished.append(True))
+
+        ctrl.worker.load_finished.emit()
+
+        assert finished == [True]

@@ -751,12 +751,6 @@ class VideoPlayer(QMainWindow):
                 QMessageBox.warning(self, "提示", err)
             return
 
-        capture_fps = self.fps_spin.value()
-        if capture_fps > self.ctrl.fps:
-            capture_fps = int(self.ctrl.fps)
-            self.fps_spin.setValue(int(self.ctrl.fps))
-            self.statusBar().showMessage(f"擷取 fps 已限制為影片實際 fps ({self.ctrl.fps:.1f})")
-
         out_dir = self.output_path_label.text()
         ext = "jpg" if self.img_format_combo.currentText() == "JPEG" else "png"
         prefix = self.prefix_edit.text().strip() or "capture"
@@ -775,12 +769,14 @@ class VideoPlayer(QMainWindow):
             if ret != QMessageBox.Yes:
                 return
 
-        self.settings.fps = capture_fps
-        self.settings.prefix = prefix
-        self.settings.img_format = self.img_format_combo.currentText()
-        self.settings.jpeg_quality = self.quality_spin.value()
-        self.settings.resolution = Resolution.from_value(self.res_combo.currentText())
-        self.settings.output_dir = out_dir
+        self.ctrl.update_capture_settings(self.settings.replace(
+            fps=self.fps_spin.value(),
+            prefix=prefix,
+            img_format=self.img_format_combo.currentText(),
+            jpeg_quality=self.quality_spin.value(),
+            resolution=Resolution.from_value(self.res_combo.currentText()),
+            output_dir=out_dir,
+        ))
 
         self.progress_bar.setStyleSheet("")
         self.controls.btn_range.setEnabled(False)
@@ -788,7 +784,7 @@ class VideoPlayer(QMainWindow):
         self.ctrl.start_batch_capture(
             self.ctrl.capture_start_frame,
             self.ctrl.capture_end_frame,
-            capture_fps,
+            self.fps_spin.value(),
             self.settings,
             self.ctrl.fps,
         )
@@ -828,15 +824,17 @@ class VideoPlayer(QMainWindow):
             return
         assert start_sec is not None and end_sec is not None
 
-        self.settings.output_dir = self.output_path_label.text()
-        self.settings.prefix = self.prefix_edit.text().strip() or "capture"
-        self.settings.video_format = self.vid_format_combo.currentText()
-        self.settings.keep_audio = self.keep_audio_check.isChecked()
-        self.settings.use_stream_copy = self.copy_codec_check.isChecked()
-        self.settings.video_codec = self.vid_codec_combo.currentText()
-        self.settings.video_crf = self.vid_crf_spin.value()
-        self.settings.video_preset = self.vid_preset_combo.currentText()
-        self.settings.video_scale_width = self.vid_scale_combo.currentText()
+        self.ctrl.update_capture_settings(self.settings.replace(
+            output_dir=self.output_path_label.text(),
+            prefix=self.prefix_edit.text().strip() or "capture",
+            video_format=self.vid_format_combo.currentText(),
+            keep_audio=self.keep_audio_check.isChecked(),
+            use_stream_copy=self.copy_codec_check.isChecked(),
+            video_codec=self.vid_codec_combo.currentText(),
+            video_crf=self.vid_crf_spin.value(),
+            video_preset=self.vid_preset_combo.currentText(),
+            video_scale_width=self.vid_scale_combo.currentText(),
+        ))
 
         self.progress_bar.setStyleSheet("")
         self.progress_bar.setMaximum(0)

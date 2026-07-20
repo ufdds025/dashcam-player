@@ -75,6 +75,9 @@ class Controller(QObject):
         self._export = ExportManager(parent=self)
         self._gps = GPSFacade(parent=self)
 
+        # Worker 輸出信號 → PlaybackManager（frame/position/video_info 轉發鏈）
+        self._playback.connect_worker_signals()
+
         self._connect_manager_signals()
 
     def _connect_manager_signals(self) -> None:
