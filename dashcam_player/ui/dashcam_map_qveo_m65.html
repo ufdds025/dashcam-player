@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>GPS 軌跡地圖</title>
+<link rel="stylesheet" href="file:///C:/Users/JUN HER YU/行車紀錄器檔案編輯軟體/dashcam_player/ui/leaflet.css"/>
+<script src="file:///C:/Users/JUN HER YU/行車紀錄器檔案編輯軟體/dashcam_player/ui/leaflet.js"></script>
+<style>
+  * { margin: 0; padding: 0; }
+  html, body, #map { width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+var tracks = [{"lat": 24.33846, "lon": 120.455859, "time": 0.0, "altitude": null, "speed": null}, {"lat": 24.338501, "lon": 120.455883, "time": 2.0, "altitude": null, "speed": null}, {"lat": 24.338514, "lon": 120.455895, "time": 3.0, "altitude": null, "speed": null}, {"lat": 24.338521, "lon": 120.455906, "time": 4.0, "altitude": null, "speed": null}, {"lat": 24.338526, "lon": 120.455916, "time": 5.0, "altitude": null, "speed": null}, {"lat": 24.338529, "lon": 120.455924, "time": 6.0, "altitude": null, "speed": null}, {"lat": 24.338531, "lon": 120.455932, "time": 7.0, "altitude": null, "speed": null}, {"lat": 24.338535, "lon": 120.455966, "time": 11.0, "altitude": null, "speed": null}, {"lat": 24.338545, "lon": 120.456015, "time": 17.0, "altitude": null, "speed": null}, {"lat": 24.338541, "lon": 120.456045, "time": 27.0, "altitude": null, "speed": null}, {"lat": 24.338539, "lon": 120.456046, "time": 28.0, "altitude": null, "speed": null}, {"lat": 24.338537, "lon": 120.456046, "time": 29.0, "altitude": null, "speed": null}, {"lat": 24.338537, "lon": 120.456052, "time": 37.0, "altitude": null, "speed": null}, {"lat": 24.338537, "lon": 120.456055, "time": 39.0, "altitude": null, "speed": null}, {"lat": 24.338541, "lon": 120.45609, "time": 44.0, "altitude": null, "speed": null}, {"lat": 24.338539, "lon": 120.456093, "time": 46.0, "altitude": null, "speed": null}, {"lat": 24.338538, "lon": 120.456095, "time": 47.0, "altitude": null, "speed": null}, {"lat": 24.338541, "lon": 120.456095, "time": 48.0, "altitude": null, "speed": null}, {"lat": 24.338541, "lon": 120.456103, "time": 51.0, "altitude": null, "speed": null}, {"lat": 24.338541, "lon": 120.456106, "time": 52.0, "altitude": null, "speed": null}, {"lat": 24.338541, "lon": 120.456109, "time": 54.0, "altitude": null, "speed": null}];
+var map = L.map('map', { zoomControl: true, attributionControl: true }).setView([24.3385025, 120.455984], 15);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>', maxZoom: 19 }).addTo(map);
+
+// 繪製軌跡線
+var latlngs = tracks.map(function(t) { return [t.lat, t.lon]; });
+var polyline = L.polyline(latlngs, { color: '#2196F3', weight: 3, opacity: 0.8 }).addTo(map);
+map.fitBounds(polyline.getBounds().pad(0.1));
+
+// 起點 (綠色)
+var start = tracks[0];
+L.circleMarker([start.lat, start.lon], { color: '#4CAF50', radius: 6 }).addTo(map)
+ .bindPopup('起點');
+
+// 終點 (紅色)
+var end = tracks[tracks.length - 1];
+L.circleMarker([end.lat, end.lon], { color: '#F44336', radius: 6 }).addTo(map)
+ .bindPopup('終點');
+
+// 當前位置標記 (藍色圓點)
+var marker = L.circleMarker([start.lat, start.lon], {
+  color: '#1565C0', fillColor: '#2196F3', fillOpacity: 0.9, radius: 8, weight: 3
+}).addTo(map);
+marker.bindPopup('當前位置');
+
+// 提供 Python 端呼叫更新接口
+function updatePosition(lat, lon) {
+  marker.setLatLng([lat, lon]);
+  map.panTo([lat, lon], { animate: true, duration: 0.3 });
+}
+</script>
+</body>
+</html>

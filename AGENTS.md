@@ -1,0 +1,189 @@
+# AGENTS.md — 行車紀錄器影片播放與截圖工具
+
+多模組 PyQt5 + OpenCV 應用程式。已從單一檔案重構為套件結構。
+
+## 執行
+
+```bash
+pip install PyQt5 opencv-python numpy easyocr
+python -m dashcam_player.main
+```
+
+或直接執行 `啟動.bat`（會 `cd` 到專案根目錄後呼叫相同指令）。
+
+Python 3.11（由 `__pycache__/` 推斷）。
+
+## 專案結構
+
+```
+dashcam_player/                  # 含 __init__.py（regular package）
+├── __init__.py                  # 套件標記（讓 dashcam_player 成為正式 package，從根目錄 pytest 可正常 import）
+├── main.py                 # 入口點（init_log → QApplication → VideoPlayer）
+├── core/
+│   ├── controller.py       # Controller 層（連接 UI 與 Worker，所有業務邏輯）
+│   ├── video_player.py     # 瘦 UI 主視窗（僅佈局與事件綁定）
+│   ├── video_worker.py     # 播放背景執行緒（QThread）
+│   ├── export_worker.py    # FFmpeg 匯出執行緒
+│   ├── batch_capture.py    # 批次截圖背景執行緒
+│   └── gps_manager.py      # GPSManager（GPS 載入/解析/查詢，封裝於獨立 QObject）
+├── models/
+│   ├── video_info.py       # VideoInfo dataclass
+│   ├── capture_settings.py # CaptureSettings dataclass
+│   ├── gps_roi.py          # GPSROISetting、GPSROIDetectionResult dataclass
+│   └── resolution.py       # Resolution enum（解析度選項）
+├── ui/
+│   ├── styles.py           # 全域 UI 樣式常數
+│   ├── map_view.py         # QWebEngineView + Leaflet.js 地圖元件
+│   ├── playback_controls.py # PlaybackControls widget（重構後啟用）
+│   └── dialogs/            # 對話框
+│       ├── capture_settings.py
+│       ├── gps_settings.py
+│       ├── gps_roi_adjust.py   # GPS ROI 調整對話框（可拖曳/縮放選取框）
+│       └── output_settings.py
+├── utils/
+│   ├── ffmpeg.py           # FFmpeg/FFprobe 工具
+│   ├── cv_utils.py         # OpenCV 工具（硬體偵測、解析度、QImage 轉換）
+│   ├── time_utils.py       # 時間格式/解析
+│   ├── gps_parser.py       # GPS 資料提取（GPX/NMEA/SRT/內嵌 metadata/data track/OCR fallback）
+│   ├── gps_ocr.py          # EasyOCR GPS 辨識（從畫面文字提取座標，fallback 方案）
+│   ├── gps_roi_detector.py # GPS ROI 自動偵測引擎（EasyOCR detect() 定位文字）
+│   ├── gps_roi_templates.py # 內建 GPS 位置模板（左上/右上/左下/右下）
+│   ├── osm_map.py          # OpenStreetMap 靜態縮圖 + Leaflet HTML 生成
+│   └── log.py              # logging 模組封裝（RotatingFileHandler）
+├── config/
+│   └── settings.py         # QSettings 持久化
+├── tests/
+│   ├── conftest.py          # 共用 fixtures（video_worker、frame_1080p/480p/small）
+│   ├── test_models.py       # dataclass 單元測試
+│   ├── test_utils.py        # 時間工具 + get_keyframe_positions 測試
+│   ├── test_gps_parser.py   # GPS 解析/插值/GPX 匯出 + detector/extractor 策略測試
+│   ├── test_gps_roi.py      # GPS ROI 測試（dataclass、templates、union ROI、bbox 篩選、corner 判斷）
+│   ├── test_cv_utils.py     # OpenCV 工具測試（fourcc/解析度/overlay/imwrite）
+│   ├── test_video_worker.py # VideoWorker 指令佇列、keyframe 偵測、RELEASE_CAP 測試 (12 項)
+│   └── test_controller.py   # Controller 驗證方法測試（validate_batch_range / check_batch_conflict / validate_export_times）(20 項)
+└── requirements.txt
+```
+
+## 測試
+
+```bash
+pytest                              # 從根目錄（自動經由 dashcam_player/__init__.py 解析 package）
+pytest dashcam_player/tests/        # 或直接指定路徑
+python -m pytest dashcam_player/tests/ -v   # 完整 verbose
+```
+
+## Lint / Type Check
+
+```bash
+ruff check dashcam_player/                        # 0 errors expected
+python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
+```
+
+- **ruff**（`pyproject.toml`）— lint + import sort，忽略 F821/B008/E501
+- **mypy**（`pyproject.toml`）— 型別檢查，PyQt5 stub 噪音經 per-module `disable_error_code` 抑制（`union-attr`/`attr-defined`/`arg-type` 等）
+- **CI**（`.github/workflows/ci.yml`）— GitHub Actions 執行 ruff + mypy + pytest
+
+## 架構重點
+
+- **Controller 層**（`core/controller.py`）— 所有邏輯集中管理，`VideoPlayer` 僅負責 UI 佈局與事件綁定
+- **Controller signals**（`controller.py`）— 定義 10 個 signal：`video_loaded(object)`、`load_failed(str)`、`batch_progress(int,int)`、`batch_finished(int,int)`、`status_message(str)`、`export_finished(bool,str)`、`gps_position_updated(float,float)`、`gps_ready(str,bool,int)`、`frame_ready(object,int)`、`position_updated(float,int)`、`play_finished()`
+- **Controller relay**（`controller.py`）— `_on_frame_ready`、`_on_position_changed`、`_on_play_finished`、`_on_gps_loaded` 將 Worker/GPSManager signal 轉發給 VideoPlayer，UI 不直接連接 Worker
+- **Controller methods**（`controller.py`）— `skip(seconds)`（相對 seek）、`seek_to(frame_idx)`（seek 別名）、`set_playback_speed(speed)`（→ `worker.set_target_fps()`）、`validate_batch_range()`（驗證標記範圍）、`check_batch_conflict(out_dir, prefix, ext)`（回傳衝突檔案列表）、`validate_export_times(start_time, end_time)`（驗證匯出時間範圍）
+- **`Controller.settings` property**（`controller.py`）— 回傳 `AppSettings` 實例（`self._app_settings`），用於視窗幾何、上次開啟目錄等持久化。`Controller.capture_settings` 為 `CaptureSettings` 唯一權威來源
+- **`capture_single` 簽章**（`controller.py`）— 接受 7 參數：`(frame, out_dir, prefix, img_format, quality, resolution, frame_idx)`，Controller 內部儲存 `_current_frame` 以供截圖使用
+- **`Controller.current_frame` property**（`controller.py`）— 唯讀，回傳目前顯示的 frame（numpy ndarray 或 None）。View 端不持有 frame 副本，經由此 property 存取
+- **`video_loaded` signal**（`controller.py`）— `pyqtSignal(object)`，emit `VideoInfo` 實例（非 `str`）
+- **`VideoPlayer.settings` property**（`video_player.py`）— `@property` 委託至 `self.ctrl.capture_settings`，Controller 為唯一權威來源。所有設定寫入經由 `Controller.update_capture_settings()`，UI 不長期持有參照。**不可將 `@property` 插入 `__init__` 內部，否則會截斷 `__init__` 導致 `_init_ui()` 等不執行**
+- **`VideoWorker(QThread)`** — 背景解碼，所有指令（play/pause/seek/step/stop/release_cap）經由 `queue.Queue[_Command]` 統一投遞，`run()` loop 單一消費，消除雙狀態變數競爭
+  - **`RELEASE_CAP` + `_ensure_cap()`**（A9）：批次截圖前釋放主解碼器，播放時自動重建並 seek 回原位置
+  - **Keyframe-aware seek**（A2）：`ffprobe` 載入關鍵影格時間表，`_nearest_keyframe_idx()` 跳最近 keyframe 再向前解碼，避免長 GOP 影片 seek 卡頓
+  - **`try/finally` cap 釋放**：`run()` 迴圈包在 `try/finally` 中，確保 `cap.release()` 在任何異常或提前 return 時都會執行
+  - **⚠️ `queue.get()` 阻塞陷阱**：`run()` loop 內**不可**用 `queue.get(timeout=...)` 檢查指令，播放時佇列為空會每幀阻塞，導致幀率降至 ~20fps。須用 `queue.get_nowait()`（非阻塞）
+- **`BatchCaptureWorker(QThread)`** — 完全背景化批次截圖，內部自行管理 VideoCapture，`run()` 使用 `try/finally` 確保 `cap.release()`
+- **`ExportWorker(QThread)`** — 背景執行 FFmpeg subprocess
+- **`_GPSLoadThread(QThread)`**（`gps_manager.py`）— 背景 GPS 偵測與軌跡提取，封裝於 `GPSManager` 內部。`finished` signal 帶 `(video_path, has_gps, track_count, tracks)`，直接回傳軌跡避免二次全片掃描
+- **`GPSManager(QObject)`**（`gps_manager.py`）— 獨立 GPS 管理器，負責載入、解析、插值與資源管理。Controller 不直接操作 `GPSParser`，透過 `GPSManager` 存取所有 GPS 功能。`gps_loaded` signal 帶 `(video_path, has_gps, track_count)`
+- **`AppSettings`**（`config/settings.py`）— 使用 QSettings 持久化視窗幾何、上次開啟目錄、擷取設定
+- **暫停縮放**（`video_player.py`）— 暫停時以滑鼠滾輪縮放 1.0x-5.0x，縮放中心定位於滑鼠位置；crop rect 自動 clamp 至影像邊界（邊緣貼邊）；開始播放或開啟新影片時自動重置
+- **硬體加速策略**（`cv_utils.py` A6）— `detect_hw_backends()` 偵測 CUDA/OpenCL；`configure_hw_acceleration()` 僅在 CUDA 時設 `VIDEO_ACCELERATION_ANY` + `CAP_PROP_HW_DEVICE=0`，OpenCL-only 不設 flag（避免誤套 D3D11/MFX 後端）
+- **地圖 panTo 優化**（`osm_map.py` A5）— `updatePosition` JS 僅在新位置超出 `map.getBounds()` 時才 `map.panTo`，否則只更新 `marker.setLatLng`，避免播放時地圖持續晃動
+
+## 已知陷阱
+
+- **`_current_idx` 執行緒安全**：`VideoWorker` 內 `run()` 為唯一寫入端；Controller 的 `_current_idx` 為獨立副本，經由 signal 取得最新值
+- **`position_changed` signal**：emit `(float, int)`，主執行緒直接使用傳入的 `frame_idx`
+- **`worker.close()`**：僅設定 `_stop = True`，不釋放 `cap`；`run()` 迴圈結束後自行釋放
+- **⚠️ QThread `run()` 不可因 EOF `break`**：`VideoWorker.run()` 播放到尾端（`cap.read()` 失敗）時**不可** `break` 跳出 while 迴圈，否則 worker 執行緒終止，後續所有 play/seek 指令進了 queue 卻無人消費，UI 完全卡死。正確做法是 `playing = False; continue`，保持迴圈存活等待下一個指令。同理，`BatchCaptureWorker.run()` 也用 `try/finally` 確保 `cap.release()` 而非提前 return
+- **批次截圖**：由 `BatchCaptureWorker` 在背景執行緒順序讀取，完全脫離主執行緒
+- **JPEG 品質**：由 `quality_spin`（QSpinBox, 1-100, 預設 95）控制
+- **解析度等比例縮放**：`cv_utils.apply_resolution()` 以 `min(target/src)` 計算 scale
+- **縮放 crop 後需 `.copy()`**：`_display_frame` 中 zoom crop 的 numpy slice 是 view（非連續記憶體），傳入 `QImage` 會噴 `TypeError`；需加 `.copy()` 保證連續性
+- **硬體解碼**：`cv_utils.detect_hw_backends()` 偵測 CUDA/OpenCL；`configure_hw_acceleration()` 僅 CUDA 時設 `VIDEO_ACCELERATION_ANY` + `HW_DEVICE=0`；OpenCL-only 不設 flag（避免 MFX/D3D11 誤套）
+- **`import cv2`**：`controller.py` 的 `capture_single()` 需要 `cv2`，不可漏加 import
+- **signal 順序**：`video_worker.py` 中 `video_info_ready` 必須先於 `duration_ready` emit — 否則 `_on_duration_ready` 檢查 `self.video_info` 時仍為 `None`，`video_loaded` signal 永不觸發
+- **`duration` 儲存**：`_on_duration_ready` 需將傳入的 `sec` 寫入 `self.video_info.duration`，否則總時長永遠為 0
+- **shutdown**：務必呼叫 `_cancel_export()`（而非 `stop_export()`）以清除 `_export_params` 來阻止 retry worker 洩漏
+- **stop / wait**：所有 stop 方法在 `wait()` 前須 `try: disconnect()` 避免 callback 在 wait 期間觸發
+- **Logging**：使用標準 `logging` 模組搭配 `RotatingFileHandler`，日誌寫入 `tempfile.gettempdir() / dashcam_debug.log`
+
+## GPS 相關已知陷阱
+
+- **`_overlay_gps_text` 就地修改 frame**：`overlay_gps_text()` 內部已做 `frame.copy()`，不會修改原始 frame。Controller 與 BatchCaptureWorker 皆安全使用
+- **`_parse_nmea` GPGGA 時間**：GPGGA 與 GPRMC 句子皆含 HHMMSS.SS 時間欄位，解析器從兩者提取時間以正確插值
+- **`_parse_gpx` 無 time 的點**：GPX 中缺少 `<time>` 的追蹤點直接跳過，不加入軌跡列表（避免產生負值相對時間或 time=0 假點）
+- **`_parse_gpx` 型別標註**：`_parse_gpx` 實際回傳 `Tuple[List[GPSPoint], Optional[float]]`，非 `List[GPSPoint]`
+- **`_parse_iso_time`**：`_parse_gpx` 內部使用此輔助函數解析 XML 時間字串，支援 `Z` 與 `±HH:MM` 時區格式；解析失敗則跳過該點
+- **SRT `\r\n` 相容**：`_parse_srt` 在 regex 比對前先 `content.replace("\r\n", "\n").replace("\r", "\n")` 標準化換行，否則 regex `(?=\n\n)` 對 Windows 換行永遠不匹配
+- **GPS 節流計數器**：`_gps_throttle_counter` 在 seek/step/skip 時需重置為 0，否則地圖標記會延遲更新；另設 `_gps_manual_seek` flag，手動操作時跳過節流器、立即更新地圖
+- **OSM 預設快取**：`osm_map.py` 將 `_TILE_CACHE_DIR` 預設為 `tempfile.gettempdir()/dashcam_osm_cache`，減少重複 HTTP 請求。`init_osm_cache()` 由 `main.py` 顯式呼叫，非 import-time 自動執行
+- **OSM 快取鎖**：`osm_map.py` 使用 `_CACHE_LOCK = threading.Lock()` 保護 `_STATIC_MAP_MEMORY_CACHE` 存取，確保批次截圖與主執行緒並行時的執行緒安全
+- **批次截圖 OSM 縮圖**：`BatchCaptureWorker` 的 GPS 疊加也包含 OSM 靜態縮圖（與單張截圖一致），依賴 `get_static_map()` HTTP 請求
+- **`QSettings` 布林值**：`show_gps_map` / `skip_gps_overlay` 等布林設定從 QSettings 讀回時需手動轉換（字串 → bool）
+- **OCR fallback**：`GPSParser._detect_gps()` 在外部檔案與內嵌 metadata 都失敗時，嘗試用 EasyOCR 從畫面辨識 GPS 文字（`gps_ocr.py`）。OCR 偵測僅取樣 1 幀，提取時每 1 秒取樣。`_extraction_attempted` flag 確保空結果被快取，避免重複掃描
+- **skip_ocr 優化**：`GPSParser(..., skip_ocr=True)` 在 `open_video` 中跳過 OCR 偵測，避免每次開啟影片都載入 EasyOCR/torch（耗時 2-10 秒）。OCR 僅在 `extract_gps_tracks()` 被明確呼叫且其他 GPS 來源都失敗時才執行。Controller 的 `open_video()` 傳入 `skip_ocr=True`
+- **`_tracks_loaded` 快取**：`GPSManager.extract_tracks_sync()` 檢查 `_tracks_loaded` flag，已載入時直接回傳 `_tracks`，避免重複 OCR 全片掃描
+- **GPU 衝擊**：EasyOCR 首次載入 PyTorch CUDA 時 GPU 使用率會短暫達 90-100%（約 2-5 秒），完成後回落至正常水準（~7%）。此為 PyTorch/CUDA context 初始化的固有行為
+- **OCR 準確度**：裁切左上角區域後預處理（灰階→放大→二值化）可能遺失小數點，`gps_ocr.py.ocr_frame()` 採用雙重策略：ROI 失敗時改用全畫面 OCR
+- **OCR GPU 加速**：`GPSOCR._detect_cuda()` 偵測 CUDA（torch.cuda.is_available），有 GPU 時 EasyOCR 啟用 GPU 加速
+- **地圖 CORS**：`map_view.py` 設定 `QWebEngineSettings.LocalContentCanAccessRemoteUrls = True`，允許 `setHtml()` 載入的 HTML 存取 OSM 遠端圖磚
+- **地圖載入時序**：`MapView._page_ready` flag 確保 `updatePosition()` 僅在頁面載入完成後呼叫，避免 `ReferenceError`
+- **GPS 背景執行緒**：`open_video()` 中先呼叫 `worker.open(path)`（立即解碼），再啟動 `_GPSLoadThread(path)` 平行偵測 GPS。`gps_ready` 訊號在背景完成後觸發，`_on_video_loaded` 先設 GPS 為「偵測中…」，等 `_on_gps_ready` 才更新選單/地圖/狀態列
+- **GPS 過期結果保護**：`gps_loaded` signal 帶 `video_path`，`_on_gps_loaded` 比對 `path != self._video_path`，快速切換影片時舊執行緒的結果會被丟棄
+- **GPS ROI 系統**：使用 ROI（感興趣區域）設定取代原有「4角落×6預處理」策略，大幅提升 OCR 效能。ROI 設定綁定「解析度 + 檔案格式」（如 `1920x1080_MP4`），儲存於 QSettings `gps_roi/{key}` 命名空間
+- **GPS ROI 偵測流程**：(1)查已知 ROI → (2)自動偵測（EasyOCR detect()） → (3)手動微調 UI。自動偵測失敗時透過 `gps_manager.gps_roi_setup_needed` signal 觸發手動調整對話框
+- **GPS ROI 設定儲存**：`AppSettings.load_gps_roi(w, h, fmt)` / `save_gps_roi(setting)` / `get_all_gps_roi_keys()`，使用 `gps_roi/{key}` 命名空間
+- **GPS ROI 調整對話框**：`GPSROIAdjustDialog` 顯示影片畫面 + 可拖曳/縮放的 ROI 選取框，支援自動偵測按鈕與手動微調
+
+## Unicode / 中文路徑相容性
+
+- **`win32_short_path()`**（`utils/ffmpeg.py`）— 傳給 `cv2.VideoCapture` 的檔案路徑經此函數轉換為 8.3 短路徑。若 8.3 短檔名在磁碟上被停用則轉換失敗（會 log warning），可能導致無法開啟中文檔名影片
+- **`imwrite_safe()`**（`utils/cv_utils.py`）— 使用 `cv2.imencode` + Python `open()` 寫入圖片，繞過 MinGW OpenCV `cv2.imwrite` 的 ANSI API 限制，天生支援中文路徑，已取代 `win32_short_path` 用於 `capture_single()` 與 `BatchCaptureWorker`
+- **`utils/export_worker.py`** FFmpeg stderr 解碼先用系統 locale encoding（CP950 for 繁體中文），fallback UTF-8
+- **`utils/time_utils.py`** 時間輸入已處理全形冒號 `：`（U+FF1A）
+- **輸出資料夾 fallback**：`os.path.abspath("captures")`（非硬編碼 `./captures`）
+
+## 封裝成 .exe
+
+使用 **PyInstaller**（v6.15.0）+ **Python 3.11**。
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --name DashcamPlayer --console ^
+    --add-data "C:\ffmpeg\bin\ffmpeg.exe;." ^
+    --add-data "C:\ffmpeg\bin\ffprobe.exe;." ^
+    --exclude-module pytest ^
+    dashcam_player\main.py
+```
+
+- `--onefile`：單一 exe 檔，可直接複製到任何位置執行
+- `--console`：保留終端機視窗（方便看 log）
+- `--add-data`：將 FFmpeg/FFprobe 封裝進 exe（啟動時解壓至暫存目錄）
+- `find_ffmpeg()` 會優先檢查 `sys._MEIPASS`（PyInstaller 解壓路徑）
+- 若不需 FFmpeg 可拔除 `--add-data` 行
+
+## 無用／不存在
+
+- 沒有 `README`
+- 不要搜尋 `_output_prefix`（已清理）
+- `numpy` 用於 `cv_utils.py`（型別標註 + OpenCV 操作）與 `gps_ocr.py`（影像預處理），其餘檔案不可新增 `import numpy`
+- `dashcam_player/__init__.py` 為空殼（僅 docstring），無 re-export。`core/__init__.py` 才有 re-export VideoWorker / ExportWorker / BatchCaptureWorker / Controller（但 `controller.py` 直接 import 個別模組而非經由 `__init__` 的 re-export）

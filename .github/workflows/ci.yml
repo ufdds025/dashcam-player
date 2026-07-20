@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libxcb-xinerama0
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r dashcam_player/requirements.txt
+          pip install pytest ruff mypy
+
+      - name: Lint (ruff)
+        run: ruff check dashcam_player/
+
+      - name: Type check (mypy)
+        run: mypy dashcam_player/
+
+      - name: Test (pytest)
+        run: pytest

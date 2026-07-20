@@ -1,0 +1,78 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["dashcam_player"]
+exclude = ["__pycache__", "dist", ".opencode"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "F821",   # 字串註解型別（from __future__ import annotations）在 runtime 不解析，ruff 誤報
+    "B008",   # PyQt signal connect 慣用寫法
+    "E501",   # 行長由 formatter 處理
+]
+
+[tool.ruff.lint.per-file-ignores]
+"dashcam_player/tests/*" = ["E402"]   # 測試檔允許中段 import
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+follow_imports = "silent"
+exclude = ["__pycache__", "dist", ".opencode"]
+files = ["dashcam_player"]
+
+[[tool.mypy.overrides]]
+module = ["cv2.*", "PyQt5.*", "easyocr.*", "piexif.*", "numpy.*", "requests.*"]
+ignore_missing_imports = true
+
+# PyQt5 模組型別注解不完整（stub 缺 union-attr / attr-defined），逐一抑制
+[[tool.mypy.overrides]]
+module = "dashcam_player.core.video_player"
+disable_error_code = ["union-attr", "attr-defined"]
+
+[[tool.mypy.overrides]]
+module = "dashcam_player.ui.map_view"
+disable_error_code = ["union-attr"]
+
+[[tool.mypy.overrides]]
+module = "dashcam_player.ui.dialogs.gps_roi_adjust"
+disable_error_code = ["attr-defined", "arg-type", "union-attr"]
+
+[[tool.mypy.overrides]]
+module = "dashcam_player.main"
+disable_error_code = ["attr-defined"]
+
+# QThread.__init__(parent) — parent 為 object | None 是 PyQt5 stub 問題
+[[tool.mypy.overrides]]
+module = [
+    "dashcam_player.core.video_worker",
+    "dashcam_player.core.gps_manager",
+    "dashcam_player.core.batch_capture",
+    "dashcam_player.core.export_worker",
+    "dashcam_player.core.controller",
+]
+disable_error_code = ["arg-type"]
+
+# EasyOCR reader.readtext 回傳型別 stub 不完整
+[[tool.mypy.overrides]]
+module = "dashcam_player.utils.gps_ocr"
+disable_error_code = ["attr-defined", "assignment"]
+
+# OpenCV 與 numpy 型別推斷
+[[tool.mypy.overrides]]
+module = "dashcam_player.utils.gps_roi_detector"
+disable_error_code = ["name-defined", "assignment"]
+
+# cv2.cuda.getDeviceInfo 不在 openCV stubs 中
+[[tool.mypy.overrides]]
+module = "dashcam_player.utils.cv_utils"
+disable_error_code = ["attr-defined"]
+
+# 測試檔 lambda 型別推斷
+[[tool.mypy.overrides]]
+module = "dashcam_player.tests.test_video_worker"
+disable_error_code = ["misc"]
