@@ -59,7 +59,6 @@ class GPSManager(QObject):
     """
 
     gps_loaded = pyqtSignal(str, bool, int)  # (video_path, has_gps, track_count)
-    gps_position_ready = pyqtSignal(float, float)  # (lat, lon)
     gps_status_message = pyqtSignal(str)  # 狀態訊息
     gps_roi_setup_needed = pyqtSignal(str, int, int, str)  # (path, width, height, format)
 

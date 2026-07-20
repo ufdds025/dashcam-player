@@ -1,5 +1,7 @@
 # 效能改善與修正計畫書
 
+> **⚠️ 歷史快照（pre-manager-refactor）**：本報告撰寫於 Controller 重構前，行列號與行數已失效。請以 AGENTS.md 為架構參考。
+
 > 審查日期：2026-07-07
 > 適用版本：dashcam_player (重構後版本)
 > 審查範圍：全專案模組

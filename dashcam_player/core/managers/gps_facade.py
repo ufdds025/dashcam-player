@@ -83,6 +83,8 @@ class GPSFacade(QObject):
         self.status_message.emit(msg)
 
     def on_roi_setup_needed(self, path: str, w: int, h: int, fmt: str) -> None:
+        if path != self._video_path:
+            return
         from dashcam_player.ui.dialogs.gps_roi_adjust import GPSROIAdjustDialog
 
         dialog = GPSROIAdjustDialog(

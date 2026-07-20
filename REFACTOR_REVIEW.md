@@ -1,5 +1,7 @@
 # REFACTOR 設計審查紀錄
 
+> **⚠️ 歷史快照（pre-manager-refactor）**：本報告撰寫於 Controller 重構前，行列號與行數已失效。請以 AGENTS.md 為架構參考。
+
 產生日期：2026-07-04（最近更新：2026-07-19）
 測試狀態：64 passed
 

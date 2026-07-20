@@ -5,7 +5,7 @@
 ## 執行
 
 ```bash
-pip install PyQt5 opencv-python numpy easyocr
+pip install PyQt5 PyQtWebEngine opencv-python numpy easyocr piexif requests
 python -m dashcam_player.main
 ```
 
@@ -20,15 +20,21 @@ dashcam_player/                  # 含 __init__.py（regular package）
 ├── __init__.py                  # 套件標記（讓 dashcam_player 成為正式 package，從根目錄 pytest 可正常 import）
 ├── main.py                 # 入口點（init_log → QApplication → VideoPlayer）
 ├── core/
-│   ├── controller.py       # Controller 層（連接 UI 與 Worker，所有業務邏輯）
+│   ├── controller.py       # Controller 層（薄 Orchestrator，委派 Manager）
 │   ├── video_player.py     # 瘦 UI 主視窗（僅佈局與事件綁定）
 │   ├── video_worker.py     # 播放背景執行緒（QThread）
 │   ├── export_worker.py    # FFmpeg 匯出執行緒
 │   ├── batch_capture.py    # 批次截圖背景執行緒
-│   └── gps_manager.py      # GPSManager（GPS 載入/解析/查詢，封裝於獨立 QObject）
+│   ├── gps_manager.py      # GPSManager（GPS 載入/解析/查詢，封裝於獨立 QObject）
+│   └── managers/           # 四個 Manager（業務邏輯從 Controller 抽出）
+│       ├── __init__.py     # 匯出 PlaybackManager / CaptureManager / ExportManager / GPSFacade
+│       ├── playback_manager.py  # 播放控制 + GPS throttle
+│       ├── capture_manager.py   # 單張/批次截圖 + 驗證
+│       ├── export_manager.py    # FFmpeg 匯出 + 重試
+│       └── gps_facade.py        # GPS 外觀模式（封裝 GPSManager）
 ├── models/
 │   ├── video_info.py       # VideoInfo dataclass
-│   ├── capture_settings.py # CaptureSettings dataclass
+│   ├── capture_settings.py # CaptureSettings 組合式 dataclass（Screenshot/Export/GPS + replace()）
 │   ├── gps_roi.py          # GPSROISetting、GPSROIDetectionResult dataclass
 │   └── resolution.py       # Resolution enum（解析度選項）
 ├── ui/
@@ -54,14 +60,14 @@ dashcam_player/                  # 含 __init__.py（regular package）
 │   └── settings.py         # QSettings 持久化
 ├── tests/
 │   ├── conftest.py          # 共用 fixtures（video_worker、frame_1080p/480p/small）
-│   ├── test_models.py       # dataclass 單元測試
+│   ├── test_models.py       # dataclass 單元測試（含 replace()）
 │   ├── test_utils.py        # 時間工具 + get_keyframe_positions 測試
 │   ├── test_gps_parser.py   # GPS 解析/插值/GPX 匯出 + detector/extractor 策略測試
 │   ├── test_gps_roi.py      # GPS ROI 測試（dataclass、templates、union ROI、bbox 篩選、corner 判斷）
 │   ├── test_cv_utils.py     # OpenCV 工具測試（fourcc/解析度/overlay/imwrite）
 │   ├── test_video_worker.py # VideoWorker 指令佇列、keyframe 偵測、RELEASE_CAP 測試 (12 項)
-│   └── test_controller.py   # Controller 驗證方法測試（validate_batch_range / check_batch_conflict / validate_export_times）(20 項)
-└── requirements.txt
+│   └── test_controller.py   # Controller 驗證方法 + 信號 relay 鏈測試 (23 項)
+└── requirements.txt         # 實際位於 dashcam_player/（非根目錄）
 ```
 
 ## 測試
@@ -85,15 +91,21 @@ python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
 
 ## 架構重點
 
-- **Controller 層**（`core/controller.py`）— 所有邏輯集中管理，`VideoPlayer` 僅負責 UI 佈局與事件綁定
-- **Controller signals**（`controller.py`）— 定義 10 個 signal：`video_loaded(object)`、`load_failed(str)`、`batch_progress(int,int)`、`batch_finished(int,int)`、`status_message(str)`、`export_finished(bool,str)`、`gps_position_updated(float,float)`、`gps_ready(str,bool,int)`、`frame_ready(object,int)`、`position_updated(float,int)`、`play_finished()`
-- **Controller relay**（`controller.py`）— `_on_frame_ready`、`_on_position_changed`、`_on_play_finished`、`_on_gps_loaded` 將 Worker/GPSManager signal 轉發給 VideoPlayer，UI 不直接連接 Worker
-- **Controller methods**（`controller.py`）— `skip(seconds)`（相對 seek）、`seek_to(frame_idx)`（seek 別名）、`set_playback_speed(speed)`（→ `worker.set_target_fps()`）、`validate_batch_range()`（驗證標記範圍）、`check_batch_conflict(out_dir, prefix, ext)`（回傳衝突檔案列表）、`validate_export_times(start_time, end_time)`（驗證匯出時間範圍）
+- **Controller 層**（`core/controller.py`, 336 行）— 薄 Orchestrator，所有業務邏輯委派至 4 個 Manager；`VideoPlayer` 僅負責 UI 佈局與事件綁定
+- **Manager 架構**（`core/managers/`）— 四個職責分明的 Manager：
+  - `PlaybackManager`（148 行）— 播放控制（play/pause/seek/step/speed）+ GPS throttle
+  - `CaptureManager`（181 行）— 單張截圖 + 批次截圖 + validate_batch_range / check_batch_conflict
+  - `ExportManager`（135 行）— FFmpeg 匯出 + stream-copy 重試
+  - `GPSFacade`（132 行）— GPS 查詢/疊加/ROI 對話（封裝 GPSManager）
+- **Controller signals**（`controller.py`）— 定義 11 個 signal：`video_loaded(object)`、`load_failed(str)`、`batch_progress(int,int)`、`batch_finished(int,int)`、`status_message(str)`、`export_finished(bool,str)`、`gps_position_updated(float,float)`、`gps_ready(str,bool,int)`、`frame_ready(object,int)`、`position_updated(float,int)`、`play_finished()`
+- **Controller relay**（`controller.py`）— Manager 信號經 Controller relay 至 VideoPlayer，UI 不直接連接 Worker 或 Manager。`_on_frame_ready`、`_on_position_changed`、`_on_play_finished`、`_on_gps_loaded` 為 relay handlers
+- **Controller methods**（`controller.py`）— `skip(seconds)`（相對 seek）、`seek_to(frame_idx)`（seek 別名）、`set_playback_speed(speed)`（→ `PlaybackManager.set_target_fps()`）、`validate_batch_range()`（驗證標記範圍）、`check_batch_conflict(out_dir, prefix, ext)`（回傳衝突檔案列表）、`validate_export_times(start_time, end_time)`（驗證匯出時間範圍）
 - **`Controller.settings` property**（`controller.py`）— 回傳 `AppSettings` 實例（`self._app_settings`），用於視窗幾何、上次開啟目錄等持久化。`Controller.capture_settings` 為 `CaptureSettings` 唯一權威來源
-- **`capture_single` 簽章**（`controller.py`）— 接受 7 參數：`(frame, out_dir, prefix, img_format, quality, resolution, frame_idx)`，Controller 內部儲存 `_current_frame` 以供截圖使用
+- **`capture_single` 簽章**（`controller.py`）— 委派至 `CaptureManager.capture_single()`，Controller 內部儲存 `_current_frame` 以供截圖使用
 - **`Controller.current_frame` property**（`controller.py`）— 唯讀，回傳目前顯示的 frame（numpy ndarray 或 None）。View 端不持有 frame 副本，經由此 property 存取
 - **`video_loaded` signal**（`controller.py`）— `pyqtSignal(object)`，emit `VideoInfo` 實例（非 `str`）
-- **`VideoPlayer.settings` property**（`video_player.py`）— `@property` 委託至 `self.ctrl.capture_settings`，Controller 為唯一權威來源。所有設定寫入經由 `Controller.update_capture_settings()`，UI 不長期持有參照。**不可將 `@property` 插入 `__init__` 內部，否則會截斷 `__init__` 導致 `_init_ui()` 等不執行**
+- **`CaptureSettings`**（`models/capture_settings.py`）— 組合式 dataclass：`ScreenshotSettings` / `ExportSettings` / `GpsDisplaySettings` + `__getattr__`/`__setattr__` 委派 + `replace()` instance method（取代 `dataclasses.replace()`，因自訂 `__init__(**kwargs)` 不相容）
+- **`VideoPlayer.settings` property**（`video_player.py`）— `@property` 委託至 `self.ctrl.capture_settings`，Controller 為唯一權威來源。所有設定寫入經由 `Controller.update_capture_settings()` + `settings.replace()`，UI 不長期持有參照。**不可將 `@property` 插入 `__init__` 內部，否則會截斷 `__init__` 導致 `_init_ui()` 等不執行**
 - **`VideoWorker(QThread)`** — 背景解碼，所有指令（play/pause/seek/step/stop/release_cap）經由 `queue.Queue[_Command]` 統一投遞，`run()` loop 單一消費，消除雙狀態變數競爭
   - **`RELEASE_CAP` + `_ensure_cap()`**（A9）：批次截圖前釋放主解碼器，播放時自動重建並 seek 回原位置
   - **Keyframe-aware seek**（A2）：`ffprobe` 載入關鍵影格時間表，`_nearest_keyframe_idx()` 跳最近 keyframe 再向前解碼，避免長 GOP 影片 seek 卡頓
@@ -101,8 +113,8 @@ python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
   - **⚠️ `queue.get()` 阻塞陷阱**：`run()` loop 內**不可**用 `queue.get(timeout=...)` 檢查指令，播放時佇列為空會每幀阻塞，導致幀率降至 ~20fps。須用 `queue.get_nowait()`（非阻塞）
 - **`BatchCaptureWorker(QThread)`** — 完全背景化批次截圖，內部自行管理 VideoCapture，`run()` 使用 `try/finally` 確保 `cap.release()`
 - **`ExportWorker(QThread)`** — 背景執行 FFmpeg subprocess
-- **`_GPSLoadThread(QThread)`**（`gps_manager.py`）— 背景 GPS 偵測與軌跡提取，封裝於 `GPSManager` 內部。`finished` signal 帶 `(video_path, has_gps, track_count, tracks)`，直接回傳軌跡避免二次全片掃描
-- **`GPSManager(QObject)`**（`gps_manager.py`）— 獨立 GPS 管理器，負責載入、解析、插值與資源管理。Controller 不直接操作 `GPSParser`，透過 `GPSManager` 存取所有 GPS 功能。`gps_loaded` signal 帶 `(video_path, has_gps, track_count)`
+- **`GPSManager(QObject)`**（`gps_manager.py`）— 獨立 GPS 管理器，負責載入、解析、插值與資源管理。Controller 經由 `GPSFacade` 存取所有 GPS 功能，不直接操作 `GPSParser`
+- **`GPSFacade`**（`core/managers/gps_facade.py`）— GPS 外觀模式，封裝 GPSManager 的查詢、疊加、匯出功能。提供 `has_roi_setting`/`is_loaded`/`get_track_count`/`has_manager` public properties
 - **`AppSettings`**（`config/settings.py`）— 使用 QSettings 持久化視窗幾何、上次開啟目錄、擷取設定
 - **暫停縮放**（`video_player.py`）— 暫停時以滑鼠滾輪縮放 1.0x-5.0x，縮放中心定位於滑鼠位置；crop rect 自動 clamp 至影像邊界（邊緣貼邊）；開始播放或開啟新影片時自動重置
 - **硬體加速策略**（`cv_utils.py` A6）— `detect_hw_backends()` 偵測 CUDA/OpenCL；`configure_hw_acceleration()` 僅在 CUDA 時設 `VIDEO_ACCELERATION_ANY` + `CAP_PROP_HW_DEVICE=0`，OpenCL-only 不設 flag（避免誤套 D3D11/MFX 後端）
@@ -186,4 +198,4 @@ pyinstaller --onefile --name DashcamPlayer --console ^
 - 沒有 `README`
 - 不要搜尋 `_output_prefix`（已清理）
 - `numpy` 用於 `cv_utils.py`（型別標註 + OpenCV 操作）與 `gps_ocr.py`（影像預處理），其餘檔案不可新增 `import numpy`
-- `dashcam_player/__init__.py` 為空殼（僅 docstring），無 re-export。`core/__init__.py` 才有 re-export VideoWorker / ExportWorker / BatchCaptureWorker / Controller（但 `controller.py` 直接 import 個別模組而非經由 `__init__` 的 re-export）
+- `dashcam_player/__init__.py` 為空殼（僅 docstring），無 re-export。`core/__init__.py` 才有 re-export VideoWorker / ExportWorker / BatchCaptureWorker / Controller + 四個 Manager（但 `controller.py` 直接 import 個別模組而非經由 `__init__` 的 re-export）
