@@ -53,6 +53,26 @@ class GPSFacade(QObject):
         self._video_path = video_path
         self._video_info = video_info
 
+    @property
+    def has_roi_setting(self) -> bool:
+        if self._gps_manager is None:
+            return False
+        return self._gps_manager.has_roi_setting
+
+    def is_loaded(self) -> bool:
+        if self._gps_manager is None:
+            return False
+        return self._gps_manager.is_loaded()
+
+    def get_track_count(self) -> int:
+        if self._gps_manager is None:
+            return 0
+        return self._gps_manager.get_track_count()
+
+    @property
+    def has_manager(self) -> bool:
+        return self._gps_manager is not None
+
     # ---- signal handlers (connected to GPSManager) ----
 
     def on_gps_loaded(self, path: str, has_gps: bool, track_count: int) -> None:

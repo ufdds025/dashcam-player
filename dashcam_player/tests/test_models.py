@@ -49,6 +49,21 @@ class TestCaptureSettings:
         assert restored.prefix == "test"
         assert restored.jpeg_quality == 80
 
+    def test_replace(self) -> None:
+        s = CaptureSettings(fps=30, prefix="old", jpeg_quality=95)
+        s2 = s.replace(fps=15, prefix="new")
+        assert s2.fps == 15
+        assert s2.prefix == "new"
+        assert s2.jpeg_quality == 95  # unchanged
+        assert s.fps == 30  # original untouched
+
+    def test_replace_sub_field(self) -> None:
+        s = CaptureSettings()
+        s2 = s.replace(video_format="MKV", keep_audio=False)
+        assert s2.video_format == "MKV"
+        assert s2.keep_audio is False
+        assert s2.fps == 30  # top-level unchanged
+
 
 class TestVideoInfoProbe:
     def test_probe_info_field(self) -> None:

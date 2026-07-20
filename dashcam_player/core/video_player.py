@@ -58,7 +58,7 @@ class VideoPlayer(QMainWindow):
         self.setWindowTitle("行車紀錄器影片播放與截圖工具")
         self.setGeometry(100, 50, 1400, 900)
 
-        self.ctrl = Controller(self)
+        self.ctrl = Controller(parent=self)
 
         # 預覽模式
         self._preview_mode: bool = False
@@ -538,10 +538,10 @@ class VideoPlayer(QMainWindow):
         # 顯示載入完成 + GPS 偵測狀態（若 GPS 尚未完成則顯示「偵測中」）
         hw = self.ctrl.hw_backends
         hw_str = ", ".join(f"{name} ({dev})" for name, dev in hw) if hw else "無（軟體解碼）"
-        if self.ctrl.gps_manager and not self.ctrl.gps_manager.is_loaded():
+        if self.ctrl.has_gps_manager and not self.ctrl.gps_is_loaded():
             gps_status = "GPS 偵測中..."
         elif self.ctrl.has_gps_data():
-            gps_status = f"GPS: {self.ctrl.gps_manager.get_track_count()} 點"
+            gps_status = f"GPS: {self.ctrl.gps_track_count()} 點"
         else:
             gps_status = "GPS: 無"
         self.statusBar().showMessage(f"就緒  |  硬體加速: {hw_str}  |  {gps_status}")
@@ -920,7 +920,7 @@ class VideoPlayer(QMainWindow):
         """更新 GPS 選單啟用狀態"""
         self._gps_toggle_action.setEnabled(has_gps)
         self._gps_export_action.setEnabled(has_gps)
-        has_roi = self.ctrl.gps_manager.has_roi_setting if self.ctrl.gps_manager else False
+        has_roi = self.ctrl.has_roi_setting
         self._gps_roi_action.setEnabled(not has_gps and not has_roi)
 
     def _export_gpx(self) -> None:

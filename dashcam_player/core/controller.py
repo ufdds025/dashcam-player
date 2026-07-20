@@ -74,6 +74,7 @@ class Controller(QObject):
         self._capture = CaptureManager(self.worker, self._hw_backends, parent=self)
         self._export = ExportManager(parent=self)
         self._gps = GPSFacade(parent=self)
+        self._gps.set_app_settings(self._app_settings)
 
         # Worker 輸出信號 → PlaybackManager（frame/position/video_info 轉發鏈）
         self._playback.connect_worker_signals()
@@ -154,11 +155,26 @@ class Controller(QObject):
         self._playback.reset_gps_throttle()
 
         self.worker.open(path)
+
+        # Disconnect old GPSManager signals before replacing
+        old_mgr = self.gps_manager
+        if old_mgr is not None:
+            try:
+                old_mgr.gps_loaded.disconnect(self._gps.on_gps_loaded)
+            except TypeError:
+                pass
+            try:
+                old_mgr.gps_status_message.disconnect(self.status_message)
+            except TypeError:
+                pass
+            try:
+                old_mgr.gps_roi_setup_needed.disconnect(self._gps.on_roi_setup_needed)
+            except TypeError:
+                pass
+
         self.gps_manager = GPSManager(
             path, skip_ocr=True, app_settings=self._app_settings, parent=self,
         )
-        self._gps.set_gps_manager(self.gps_manager)
-        self._capture.set_gps_manager(self.gps_manager)
         self.gps_manager.gps_loaded.connect(self._gps.on_gps_loaded)
         self.gps_manager.gps_status_message.connect(self.status_message)
         self.gps_manager.gps_roi_setup_needed.connect(self._gps.on_roi_setup_needed)
@@ -219,6 +235,20 @@ class Controller(QObject):
     @property
     def video_path(self) -> str:
         return self._video_path
+
+    @property
+    def has_roi_setting(self) -> bool:
+        return self._gps.has_roi_setting
+
+    @property
+    def has_gps_manager(self) -> bool:
+        return self._gps.has_manager
+
+    def gps_is_loaded(self) -> bool:
+        return self._gps.is_loaded()
+
+    def gps_track_count(self) -> int:
+        return self._gps.get_track_count()
 
     @property
     def gps_manager(self) -> GPSManager | None:
