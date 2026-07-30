@@ -67,11 +67,14 @@ class VideoWorker(QThread):
         self._hw_backends = hw_backends or []
         self._cmd_queue: queue.Queue[_Command] = queue.Queue()
         self._keyframe_times: list[float] | None = None  # 關鍵影格時間（秒），用於精確 seek
+        self._keyframe_loaded: bool = False  # A2: 延遲載入 flag
 
     def open(self, path: str) -> None:
         self._path = path
         self._stop = False
         self._current_idx = 0
+        self._keyframe_loaded = False
+        self._keyframe_times = None
         # 清空任何舊指令，開啟後停在首幀（idle）
         self._drain_commands()
         self._cmd_queue.put(_Command(_CmdType.STOP))
@@ -153,6 +156,12 @@ class VideoWorker(QThread):
         """執行跳轉並 emit 結果（run loop 內呼叫）。A2: 先跳最近 keyframe 再向前解碼。"""
         if not self.cap:
             return
+        # A2: 首次 seek 時才載入關鍵影格表（避免阻塞初始播放）
+        if not self._keyframe_loaded:
+            self._keyframe_loaded = True
+            self._keyframe_times = get_keyframe_positions(self._path)
+            if self._keyframe_times:
+                log.info(f"關鍵影格索引載入完成: {len(self._keyframe_times)} 個")
         start = self._nearest_keyframe_idx(target)
         if not self.cap.set(cv2.CAP_PROP_POS_FRAMES, start):
             log.warning(f"seek 到 keyframe {start} 失敗，從頭循序解碼")
@@ -257,11 +266,6 @@ class VideoWorker(QThread):
 
         playing = False
         last_emit_time = time.monotonic()
-
-        # A2: 背景載入關鍵影格時間表（不阻塞主執行緒，worker 緒內執行）
-        self._keyframe_times = get_keyframe_positions(self._path)
-        if self._keyframe_times:
-            log.info(f"關鍵影格索引載入完成: {len(self._keyframe_times)} 個")
 
         try:
             while not self._stop:
