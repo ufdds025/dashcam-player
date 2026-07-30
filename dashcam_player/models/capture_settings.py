@@ -15,7 +15,7 @@ class ScreenshotSettings:
     img_format: str = "JPEG"
     jpeg_quality: int = 95
     resolution: Resolution = Resolution.ORIGINAL
-    output_dir: str = ""
+    output_dir: str = "captures"
 
 
 @dataclass

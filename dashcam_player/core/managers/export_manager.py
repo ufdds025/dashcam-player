@@ -143,6 +143,10 @@ class ExportManager(QObject):
             self._launch_export(cmd)
             return
 
+        if success:
+            out_path = self._export_params.get("out_path", "")
+            message = f"擷取完成\n{out_path}" if out_path else "擷取完成"
+        self._export_params = {}
         self.export_finished.emit(success, message)
         self._export_worker = None
 
