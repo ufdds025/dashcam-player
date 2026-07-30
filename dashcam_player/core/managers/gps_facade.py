@@ -90,7 +90,7 @@ class GPSFacade(QObject):
         dialog = GPSROIAdjustDialog(
             path, w, h, fmt,
             self._app_settings,
-            parent=self.parent(),  # type: ignore[arg-type]
+            parent=None,  # GPSFacade is QObject, not QWidget
         )
         dialog.exec_()
 
@@ -108,7 +108,7 @@ class GPSFacade(QObject):
             self._video_info.height,
             fmt,
             self._app_settings,
-            parent=self.parent(),  # type: ignore[arg-type]
+            parent=None,  # GPSFacade is QObject, not QWidget
         )
         dialog.exec_()
 
