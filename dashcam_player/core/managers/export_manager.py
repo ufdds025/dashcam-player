@@ -88,7 +88,7 @@ class ExportManager(QObject):
                     settings.video_format = auto_fmt
             fmt = settings.video_format.lower()
 
-        out_dir = settings.output_dir
+        out_dir = settings.output_dir or os.path.abspath("captures")
         os.makedirs(out_dir, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
         out_path = os.path.join(out_dir, f"{settings.prefix}_{ts}.{fmt}")

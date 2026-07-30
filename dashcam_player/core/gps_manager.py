@@ -84,18 +84,33 @@ class GPSManager(QObject):
     # 背景載入
     # ==================================================================
 
-    def start_background_load(self) -> None:
+    def start_background_load(self, run_ocr: bool = False) -> None:
         """啟動背景 GPS 載入執行緒，不阻塞 UI。
 
+        run_ocr=False（預設）: 僅检查外部檔案 + embedded metadata，不跑 OCR
+        run_ocr=True: 額外跑 OCR 探測（偵測畫面文字 GPS）
+
         載入完成後觸發 gps_loaded 信號。
-        Controller 可在 open_video 中與 worker.open() 平行呼叫。
         """
         if self._closed:
             return
         self.gps_status_message.emit("正在偵測 GPS 軌跡...")
+        self._parser._skip_ocr = run_ocr
         self._load_thread = _GPSLoadThread(self._parser, parent=self)
         self._load_thread.finished.connect(self._on_load_finished)
         self._load_thread.start()
+
+    def start_ocr_detection(self) -> None:
+        """在已有 GPSManager 的情況下，額外跑 OCR 探測。
+
+        供使用者手動開啟「顯示 GPS 軌跡」時呼叫。
+        若已載入過，先清除舊結果再重新探測。
+        """
+        if self._closed:
+            return
+        self._tracks_loaded = False
+        self._tracks = []
+        self.start_background_load(run_ocr=True)
 
     def _on_load_finished(
         self, video_path: str, has_gps: bool, track_count: int, tracks: list

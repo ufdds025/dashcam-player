@@ -396,6 +396,11 @@ class Controller(QObject):
     def get_gps_bounds(self):
         return self._gps.get_gps_bounds()
 
+    def start_gps_ocr_detection(self) -> None:
+        """手動觸發 OCR GPS 偵測（使用者開啟「顯示 GPS 軌跡」時呼叫）"""
+        if self.gps_manager is not None:
+            self.gps_manager.start_ocr_detection()
+
     def export_gpx(self, output_path: str) -> bool:
         return self._gps.export_gpx(output_path)
 

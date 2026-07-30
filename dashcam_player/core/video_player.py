@@ -887,7 +887,10 @@ class VideoPlayer(QMainWindow):
         self.settings.show_gps_map = checked
         self._schedule_save()
         if checked:
-            self._show_gps_map()
+            if not self._has_gps and self.ctrl.has_gps_manager:
+                self.ctrl.start_gps_ocr_detection()
+            else:
+                self._show_gps_map()
         else:
             self._hide_gps_map()
 
@@ -918,7 +921,7 @@ class VideoPlayer(QMainWindow):
 
     def _update_gps_menu_state(self, has_gps: bool) -> None:
         """更新 GPS 選單啟用狀態"""
-        self._gps_toggle_action.setEnabled(has_gps)
+        self._gps_toggle_action.setEnabled(True)  # 總是啟用，讓使用者可手動觸發 OCR
         self._gps_export_action.setEnabled(has_gps)
         has_roi = self.ctrl.has_roi_setting
         self._gps_roi_action.setEnabled(not has_gps and not has_roi)

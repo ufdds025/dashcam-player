@@ -99,7 +99,8 @@ class CaptureManager(QObject):
         res_str = resolution.value if hasattr(resolution, "value") else str(resolution)
         frame_out = apply_resolution(frame, res_str)
         gps_coord = self._get_gps_at_frame(frame_idx, fps, gps_manager)
-        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(out_dir or os.path.abspath("captures"), exist_ok=True)
+        out_dir = out_dir or os.path.abspath("captures")
         ts = time.strftime("%Y%m%d_%H%M%S")
         ext = "jpg" if img_format == "JPEG" else "png"
         fname = f"{prefix}_{ts}.{ext}"
@@ -153,7 +154,7 @@ class CaptureManager(QObject):
             end_frame=end_frame,
             capture_fps=capture_fps,
             fps=original_fps,
-            output_dir=settings.output_dir,
+            output_dir=settings.output_dir or os.path.abspath("captures"),
             prefix=settings.prefix,
             img_format=settings.img_format,
             jpeg_quality=settings.jpeg_quality,
