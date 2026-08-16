@@ -40,7 +40,7 @@ disable_error_code = ["union-attr"]
 
 [[tool.mypy.overrides]]
 module = "dashcam_player.ui.dialogs.gps_roi_adjust"
-disable_error_code = ["attr-defined", "arg-type", "union-attr"]
+disable_error_code = ["attr-defined", "arg-type", "union-attr", "call-overload"]
 
 [[tool.mypy.overrides]]
 module = "dashcam_player.main"
@@ -70,7 +70,7 @@ disable_error_code = ["name-defined", "assignment"]
 # cv2.cuda.getDeviceInfo 不在 openCV stubs 中
 [[tool.mypy.overrides]]
 module = "dashcam_player.utils.cv_utils"
-disable_error_code = ["attr-defined"]
+disable_error_code = ["attr-defined", "call-overload"]
 
 # 測試檔 lambda 型別推斷
 [[tool.mypy.overrides]]

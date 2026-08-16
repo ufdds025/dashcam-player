@@ -408,7 +408,7 @@ class VideoPlayer(QMainWindow):
         file_menu = menubar.addMenu("檔案")
         file_menu.addAction("開啟影片", self._open_video, QKeySequence.Open)
         file_menu.addSeparator()
-        file_menu.addAction("結束", self.close, QKeySequence.Quit)
+        file_menu.addAction("結束", self._quit, QKeySequence.Quit)
 
         capture_menu = menubar.addMenu("截取")
         capture_menu.addAction("截取單張", self._capture_single, QKeySequence("Ctrl+S"))
@@ -1078,3 +1078,6 @@ class VideoPlayer(QMainWindow):
         self._save_settings()
         self.ctrl.shutdown()
         event.accept()
+
+    def _quit(self) -> None:
+        self.close()
