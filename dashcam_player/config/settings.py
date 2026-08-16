@@ -127,3 +127,19 @@ class AppSettings:
             if group.startswith("gps_roi/"):
                 all_keys.append(group)
         return all_keys
+
+    # ---- GPS 訊號過濾 ----
+
+    def load_gps_filter(self) -> tuple[bool, float]:
+        """讀取 GPS 飄移過濾設定 (enabled, max_distance_m)。"""
+        enabled = self._store.value("capture/gps_filter_enabled", False)
+        if isinstance(enabled, str):
+            enabled = enabled.lower() in ("true", "1", "yes")
+        max_d = self._store.value("capture/gps_filter_max_distance", 2000.0, type=float)
+        try:
+            max_d = float(max_d)
+        except (TypeError, ValueError):
+            max_d = 2000.0
+        if max_d <= 0:
+            max_d = 2000.0
+        return bool(enabled), max_d

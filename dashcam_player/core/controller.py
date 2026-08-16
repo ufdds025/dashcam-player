@@ -37,6 +37,7 @@ class Controller(QObject):
 
     video_loaded = pyqtSignal(object)  # (VideoInfo)
     load_failed = pyqtSignal(str)
+    error_occurred = pyqtSignal(str, str)  # (title, message) — 批次/儲存等非載入失敗的錯誤
     batch_progress = pyqtSignal(int, int)
     batch_finished = pyqtSignal(int, int)
     status_message = pyqtSignal(str)
@@ -84,6 +85,7 @@ class Controller(QObject):
     def _connect_manager_signals(self) -> None:
         # Worker → Controller relay (load_failed 直接轉發)
         self.worker.load_failed.connect(self.load_failed)
+        self.worker.error_occurred.connect(self.error_occurred)
 
         # PlaybackManager → Controller relay
         self._playback.frame_ready.connect(self._on_frame_ready)
@@ -94,7 +96,7 @@ class Controller(QObject):
         # CaptureManager → Controller relay
         self._capture.batch_progress.connect(self.batch_progress)
         self._capture.batch_finished.connect(self.batch_finished)
-        self._capture.load_failed.connect(self.load_failed)
+        self._capture.error_occurred.connect(self.error_occurred)
         self._capture.status_message.connect(self.status_message)
 
         # ExportManager → Controller relay
@@ -150,34 +152,18 @@ class Controller(QObject):
 
         self._video_path = path
         self.video_info = None
+        # 立即設定 facade 的 video context，避免 GPS 背景載入先於 video_info_ready 完成時，
+        # on_gps_loaded 的 path 比對誤判為過期結果而丟棄（video_info 稍後由 _on_video_info_ready 更新）
+        self._gps.set_video_context(path, None)
         self._capture_start_frame = -1
         self._capture_end_frame = -1
         self._playback.reset_gps_throttle()
 
         self.worker.open(path)
 
-        # Disconnect old GPSManager signals before replacing
-        old_mgr = self.gps_manager
-        if old_mgr is not None:
-            try:
-                old_mgr.gps_loaded.disconnect(self._gps.on_gps_loaded)
-            except TypeError:
-                pass
-            try:
-                old_mgr.gps_status_message.disconnect(self.status_message)
-            except TypeError:
-                pass
-            try:
-                old_mgr.gps_roi_setup_needed.disconnect(self._gps.on_roi_setup_needed)
-            except TypeError:
-                pass
-
         self.gps_manager = GPSManager(
             path, skip_ocr=True, app_settings=self._app_settings, parent=self,
         )
-        self.gps_manager.gps_loaded.connect(self._gps.on_gps_loaded)
-        self.gps_manager.gps_status_message.connect(self.status_message)
-        self.gps_manager.gps_roi_setup_needed.connect(self._gps.on_roi_setup_needed)
         self.gps_manager.start_background_load()
 
     # ==================================================================
@@ -252,7 +238,7 @@ class Controller(QObject):
 
     @property
     def gps_manager(self) -> GPSManager | None:
-        return self._gps._gps_manager
+        return self._gps.manager
 
     @gps_manager.setter
     def gps_manager(self, mgr: GPSManager | None) -> None:
@@ -332,7 +318,6 @@ class Controller(QObject):
 
     def capture_single(
         self,
-        frame: np.ndarray,
         out_dir: str,
         prefix: str,
         img_format: str,
@@ -341,6 +326,9 @@ class Controller(QObject):
         frame_idx: int,
     ) -> str | None:
         if not self.video_info:
+            return None
+        frame = self.current_frame
+        if frame is None:
             return None
         return self._capture.capture_single(
             frame, out_dir, prefix, img_format, quality, resolution,
@@ -427,5 +415,3 @@ class Controller(QObject):
         self._capture.stop_batch()
         self._export.cancel_export()
         self._gps.close_gps_manager()
-        from dashcam_player.utils.gps_ocr import GPSOCR
-        GPSOCR.close_shared_reader()

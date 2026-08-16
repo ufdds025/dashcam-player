@@ -9,13 +9,12 @@ from PyQt5.QtCore import QElapsedTimer, QThread, pyqtSignal
 from dashcam_player.models.resolution import Resolution
 from dashcam_player.utils.cv_utils import (
     apply_resolution,
-    configure_hw_acceleration,
     imwrite_safe,
+    open_video_capture,
     overlay_gps_text,
     overlay_osm_thumbnail,
     write_exif_gps,
 )
-from dashcam_player.utils.ffmpeg import win32_short_path
 from dashcam_player.utils.gps_parser import GPSPoint, interpolate_gps
 from dashcam_player.utils.log import get_logger
 from dashcam_player.utils.osm_map import get_static_map
@@ -90,8 +89,7 @@ class BatchCaptureWorker(QThread):
         is_jpeg = self._img_format == "JPEG"
         ext = "jpg" if is_jpeg else "png"
 
-        cap = cv2.VideoCapture(win32_short_path(self._video_path), cv2.CAP_FFMPEG)
-        configure_hw_acceleration(cap, self._hw_backends)
+        cap = open_video_capture(self._video_path, self._hw_backends)
 
         try:
             if not cap.isOpened():

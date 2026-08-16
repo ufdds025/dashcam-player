@@ -353,3 +353,77 @@ def test_extractor_fallback_chain(tmp_path) -> None:
     extractor = GPSTrackExtractor(str(video), parser)
     # 無任何來源，提取結果為空（不拋例外）
     assert extractor.extract() == []
+
+
+# ------------------------------------------------------------------
+# GPS 飄移過濾 (filter_gps_drift)
+# ------------------------------------------------------------------
+
+from dashcam_player.utils.gps_parser import (
+    _haversine_m,
+    filter_gps_drift,
+)
+
+
+def _pts(coords: list[tuple[float, float, float]]) -> list[GPSPoint]:
+    return [GPSPoint(lat=lat, lon=lon, time=t) for lat, lon, t in coords]
+
+
+def test_haversine_m_known_distance() -> None:
+    # 緯度 25° 處 1 度經度 ≈ 111.32 * cos(25°) ≈ 100.9 km
+    d = _haversine_m(25.0, 121.0, 25.0, 122.0)
+    assert 100000 < d < 102000
+
+
+def test_haversine_m_same_point() -> None:
+    assert _haversine_m(25.0, 121.0, 25.0, 121.0) == 0.0
+
+
+def test_filter_gps_drift_removes_spike() -> None:
+    # 中間點 (24.44, 120.46) 與前後差距約 11 km，應被丟棄
+    points = _pts([
+        (24.3385, 120.4559, 0.0),
+        (24.4385, 120.4559, 1.0),  # 飄移點
+        (24.3395, 120.4569, 2.0),
+    ])
+    result = filter_gps_drift(points, max_distance_m=2000.0)
+    assert len(result) == 2
+    assert result[0].time == 0.0
+    assert result[1].time == 2.0
+
+
+def test_filter_gps_drift_keeps_movement() -> None:
+    # 連續大跳躍（真實快速移動）應全部保留
+    points = _pts([
+        (24.0, 120.0, 0.0),
+        (24.5, 120.0, 1.0),
+        (25.0, 120.0, 2.0),
+    ])
+    result = filter_gps_drift(points, max_distance_m=2000.0)
+    assert len(result) == 3
+
+
+def test_filter_gps_drift_keeps_endpoints() -> None:
+    # 端點即使遠離相鄰點也保留
+    points = _pts([
+        (24.9, 120.9, 0.0),  # 端點飄移
+        (24.3, 120.4, 1.0),
+        (24.3395, 120.4569, 2.0),
+    ])
+    result = filter_gps_drift(points, max_distance_m=2000.0)
+    assert len(result) == 3
+
+
+def test_filter_gps_drift_disabled_threshold() -> None:
+    points = _pts([
+        (24.3385, 120.4559, 0.0),
+        (24.4385, 120.4559, 1.0),
+        (24.3395, 120.4569, 2.0),
+    ])
+    # max_distance <= 0 → 不濾除
+    assert len(filter_gps_drift(points, max_distance_m=0.0)) == 3
+
+
+def test_filter_gps_drift_short_track() -> None:
+    assert len(filter_gps_drift(_pts([(1.0, 1.0, 0.0)]), 100.0)) == 1
+    assert len(filter_gps_drift(_pts([(1.0, 1.0, 0.0), (1.1, 1.1, 1.0)]), 100.0)) == 2

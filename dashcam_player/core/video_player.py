@@ -79,6 +79,13 @@ class VideoPlayer(QMainWindow):
         self._save_debounce.setSingleShot(True)
         self._save_debounce.timeout.connect(self._save_settings)
 
+        # 播放中「最新幀」刷新：丟棄中間幀，避免 UI 跟不上時信號佇列堆積造成拖影/延遲
+        self._latest_frame: tuple | None = None
+        self._frame_timer = QTimer(self)
+        self._frame_timer.setSingleShot(True)
+        self._frame_timer.setInterval(15)
+        self._frame_timer.timeout.connect(self._flush_latest_frame)
+
         self._init_ui()
         self._connect_controller()
         self._restore_settings()
@@ -377,11 +384,14 @@ class VideoPlayer(QMainWindow):
                 self._toggle_preview_mode()
                 return True
             if event.type() == QEvent.Wheel:
-                if not self.ctrl.is_playing and self.ctrl.current_frame is not None:
+                if self.ctrl.current_frame is not None:
                     self._zoom_rel_x, self._zoom_rel_y = self._get_image_relative_pos(
                         event.pos().x(), event.pos().y()
                     )
                     delta = event.angleDelta().y()
+                    if delta == 0:
+                        # 觸控板可能只提供 pixelDelta
+                        delta = event.pixelDelta().y()
                     if delta > 0:
                         self._zoom_factor = min(self._max_zoom, self._zoom_factor + 0.2)
                     else:
@@ -457,6 +467,7 @@ class VideoPlayer(QMainWindow):
         self.ctrl.position_updated.connect(self._on_position_updated)
         self.ctrl.status_message.connect(lambda msg: self.statusBar().showMessage(msg))
         self.ctrl.load_failed.connect(self._on_load_failed)
+        self.ctrl.error_occurred.connect(self._on_error_occurred)
         self.ctrl.play_finished.connect(self._on_play_finished)
         self.ctrl.batch_progress.connect(self._on_batch_progress)
         self.ctrl.batch_finished.connect(self._on_batch_finished)
@@ -506,6 +517,9 @@ class VideoPlayer(QMainWindow):
 
     def _reset_ui_state(self) -> None:
         self._zoom_factor = 1.0
+        self._latest_frame = None
+        if self._frame_timer.isActive():
+            self._frame_timer.stop()
         self.controls.marker_label.setText("開始:-- | 結束:--")
         self.prefix_edit.clear()
         self.vid_start_edit.clear()
@@ -526,7 +540,23 @@ class VideoPlayer(QMainWindow):
         self._hide_gps_map()
 
     def _on_frame_ready(self, frame, idx: int) -> None:
-        self._display_frame(frame)
+        if self.ctrl.is_playing:
+            # 播放中只保留最新幀，由 15ms 單發 timer 統一刷新（丟棄中間幀）
+            self._latest_frame = (frame, idx)
+            if not self._frame_timer.isActive():
+                self._frame_timer.start()
+        else:
+            # 暫停/單步/seek：立即顯示，保持低延遲
+            self._latest_frame = None
+            if self._frame_timer.isActive():
+                self._frame_timer.stop()
+            self._display_frame(frame)
+
+    def _flush_latest_frame(self) -> None:
+        if self._latest_frame is not None:
+            frame, _ = self._latest_frame
+            self._latest_frame = None
+            self._display_frame(frame)
 
     def _on_video_loaded(self, info: VideoInfo) -> None:
         self.timeline.setRange(0, self.ctrl.total_frames - 1)
@@ -556,6 +586,13 @@ class VideoPlayer(QMainWindow):
             QMessageBox.critical(self, "載入失敗", msg)
         self.video_label.setText("載入失敗")
         self.statusBar().showMessage("載入失敗")
+
+    def _on_error_occurred(self, title: str, message: str) -> None:
+        """批次截圖/儲存等作業失敗的統一錯誤通報"""
+        log.error("%s: %s", title, message)
+        self.statusBar().showMessage(f"{title}: {message}")
+        if self.isVisible():
+            QMessageBox.critical(self, title, message)
 
     def _on_play_finished(self) -> None:
         self.controls.btn_play.setText("▶")
@@ -648,9 +685,6 @@ class VideoPlayer(QMainWindow):
         if self.ctrl.total_frames <= 0:
             return
         playing = self.ctrl.toggle_play()
-        if playing:
-            self._zoom_factor = 1.0
-            self._update_zoom_status()
         self.controls.btn_play.setText("⏸" if playing else "▶")
 
     def _on_timeline_preview(self, value: int) -> None:
@@ -667,8 +701,6 @@ class VideoPlayer(QMainWindow):
         self.ctrl.seek_to(self.timeline.value())
 
     def _on_speed_change(self) -> None:
-        if self.ctrl.fps <= 0:
-            return
         speed_text = self.controls.speed_combo.currentText()
         speed = float(speed_text.replace("x", ""))
         self.ctrl.set_playback_speed(speed)
@@ -728,11 +760,10 @@ class VideoPlayer(QMainWindow):
         quality = self.quality_spin.value()
         resolution = Resolution.from_value(self.res_combo.currentText())
         frame_idx = self.ctrl.get_current_frame_index()
-        frame = self.ctrl.current_frame
 
         try:
             path = self.ctrl.capture_single(
-                frame, out_dir, prefix, img_format, quality, resolution, frame_idx
+                out_dir, prefix, img_format, quality, resolution, frame_idx
             )
             self.statusBar().showMessage(f"已儲存: {path}")
         except OSError as e:
@@ -921,10 +952,9 @@ class VideoPlayer(QMainWindow):
 
     def _update_gps_menu_state(self, has_gps: bool) -> None:
         """更新 GPS 選單啟用狀態"""
-        self._gps_toggle_action.setEnabled(True)  # 總是啟用，讓使用者可手動觸發 OCR
+        self._gps_toggle_action.setEnabled(True)
         self._gps_export_action.setEnabled(has_gps)
-        has_roi = self.ctrl.has_roi_setting
-        self._gps_roi_action.setEnabled(not has_gps and not has_roi)
+        self._gps_roi_action.setEnabled(True)
 
     def _export_gpx(self) -> None:
         """匯出 GPX 軌跡檔"""

@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
 )
 
 from dashcam_player.models.gps_roi import GPSROISetting
-from dashcam_player.utils.ffmpeg import win32_short_path
+from dashcam_player.utils.cv_utils import open_video_capture
 from dashcam_player.utils.gps_roi_detector import GPSROIDetector
 from dashcam_player.utils.log import get_logger
 
@@ -216,6 +216,10 @@ class GPSROIAdjustDialog(QDialog):
         self._app_settings = app_settings
         self._roi_setting: GPSROISetting | None = None
         self._frame: np.ndarray | None = None
+        self._drawing = False
+        self._draw_start: QPointF | None = None
+        self._draw_rect_item: QGraphicsRectItem | None = None
+        self._image_item: _ImageItem | None = None
 
         self.setWindowTitle("GPS 文字位置設定")
         self.setMinimumSize(800, 600)
@@ -236,6 +240,7 @@ class GPSROIAdjustDialog(QDialog):
         self._view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._view.setMinimumHeight(400)
+        self._view.viewport().installEventFilter(self)
         layout.addWidget(self._view, 1)
 
         # 資訊列
@@ -266,6 +271,11 @@ class GPSROIAdjustDialog(QDialog):
         self._auto_btn.clicked.connect(self._auto_detect)
         settings_layout.addWidget(self._auto_btn)
 
+        self._draw_btn = QPushButton("繪製選取框")
+        self._draw_btn.setCheckable(True)
+        self._draw_btn.toggled.connect(self._toggle_draw_mode)
+        settings_layout.addWidget(self._draw_btn)
+
         layout.addWidget(settings_group)
 
         # 按鈕
@@ -276,7 +286,7 @@ class GPSROIAdjustDialog(QDialog):
 
     def _load_frame(self) -> None:
         """從影片取樣一幀作為背景"""
-        cap = cv2.VideoCapture(win32_short_path(self._video_path))
+        cap = open_video_capture(self._video_path)
         if not cap.isOpened():
             log.warning("無法開啟影片取樣幀")
             return
@@ -298,6 +308,7 @@ class GPSROIAdjustDialog(QDialog):
 
         image_item = _ImageItem(pixmap)
         self._scene.addItem(image_item)
+        self._image_item = image_item
 
         if roi_rect is not None:
             rx, ry, rw, rh = roi_rect
@@ -305,8 +316,7 @@ class GPSROIAdjustDialog(QDialog):
         else:
             rect = QRectF(w * 0.05, h * 0.05, w * 0.45, h * 0.12)
 
-        self._roi_item = _ResizableRectItem(rect)
-        self._scene.addItem(self._roi_item)
+        self._roi_item = _ResizableRectItem(rect, parent=image_item)
 
         self._view.fitInView(image_item, Qt.KeepAspectRatio)
 
@@ -346,6 +356,90 @@ class GPSROIAdjustDialog(QDialog):
         finally:
             self._auto_btn.setEnabled(True)
             self._auto_btn.setText("自動偵測")
+
+    def _toggle_draw_mode(self, checked: bool) -> None:
+        """切換滑鼠圈選模式"""
+        if checked:
+            self._view.setDragMode(QGraphicsView.NoDrag)
+            self._view.viewport().setCursor(Qt.CrossCursor)
+            self._draw_btn.setText("取消繪製")
+            # 隱藏舊的 ROI 方框，避免繪製新框時干擾
+            if getattr(self, "_roi_item", None) is not None:
+                self._roi_item.setVisible(False)
+        else:
+            self._view.viewport().setCursor(Qt.ArrowCursor)
+            self._draw_btn.setText("繪製選取框")
+            if self._draw_rect_item and self._scene:
+                self._scene.removeItem(self._draw_rect_item)
+                self._draw_rect_item = None
+            # 未繪製新框時，恢復顯示舊的 ROI 方框
+            if getattr(self, "_roi_item", None) is not None:
+                self._roi_item.setVisible(True)
+
+    def eventFilter(self, obj, event) -> bool:
+        """過濾 QGraphicsView viewport 的滑鼠事件，實現繪製選取框"""
+        from PyQt5.QtCore import QEvent
+
+        if obj is not self._view.viewport():
+            return False
+
+        if event.type() == QEvent.MouseButtonPress and self._draw_btn.isChecked():
+            self._on_view_mouse_press(event)
+            return True
+        elif event.type() == QEvent.MouseMove and self._drawing:
+            self._on_view_mouse_move(event)
+            return True
+        elif event.type() == QEvent.MouseButtonRelease and self._drawing:
+            self._on_view_mouse_release(event)
+            return True
+        return False
+
+    def _on_view_mouse_press(self, event) -> None:
+        """滑鼠按下：開始繪製選取框"""
+        if not self._draw_btn.isChecked() or event.button() != Qt.LeftButton:
+            return
+        scene_pos = self._view.mapToScene(event.pos())
+        self._drawing = True
+        self._draw_start = scene_pos
+        self._draw_rect_item = QGraphicsRectItem(QRectF(scene_pos.x(), scene_pos.y(), 0, 0))
+        pen = QPen(QColor(255, 255, 0), 2)
+        self._draw_rect_item.setPen(pen)
+        self._draw_rect_item.setBrush(QBrush(QColor(255, 255, 0, 30)))
+        self._draw_rect_item.setZValue(20)
+        self._scene.addItem(self._draw_rect_item)
+
+    def _on_view_mouse_move(self, event) -> None:
+        """滑鼠移動：更新選取框大小"""
+        if not self._drawing or self._draw_start is None or self._draw_rect_item is None:
+            return
+        scene_pos = self._view.mapToScene(event.pos())
+        x = min(self._draw_start.x(), scene_pos.x())
+        y = min(self._draw_start.y(), scene_pos.y())
+        w = abs(scene_pos.x() - self._draw_start.x())
+        h = abs(scene_pos.y() - self._draw_start.y())
+        self._draw_rect_item.setRect(QRectF(x, y, w, h))
+
+    def _on_view_mouse_release(self, event) -> None:
+        """滑鼠放開：完成繪製，替換為可調整的 ROI 方框"""
+        if not self._drawing or event.button() != Qt.LeftButton:
+            return
+        self._drawing = False
+        self._draw_start = None
+
+        if self._draw_rect_item and self._frame is not None:
+            r = self._draw_rect_item.rect()
+            self._scene.removeItem(self._draw_rect_item)
+            self._draw_rect_item = None
+
+            if r.width() > 10 and r.height() > 5:
+                if self._image_item is not None:
+                    # 移除舊的 ROI 方框（可能為隱藏狀態），避免殘留
+                    if getattr(self, "_roi_item", None) is not None and self._scene:
+                        self._scene.removeItem(self._roi_item)
+                    self._roi_item = _ResizableRectItem(r, parent=self._image_item)
+
+        self._draw_btn.setChecked(False)
+        self._view.viewport().setCursor(Qt.ArrowCursor)
 
     def _get_roi_rect(self) -> tuple[float, float, float, float]:
         """取得目前選取框的相對座標"""

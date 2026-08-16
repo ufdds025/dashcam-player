@@ -247,7 +247,7 @@ class GPSManager(QObject):
                 self._load_thread.finished.disconnect()
             except (TypeError, RuntimeError):
                 pass
-            # EasyOCR 載入需 2-10 秒，最多等待 15 秒
+            # OCR 載入需數秒，最多等待 15 秒
             if not self._load_thread.wait(15000):
                 log.warning("GPS 載入執行緒逾時，強制終止")
                 self._load_thread.terminate()

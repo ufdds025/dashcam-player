@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
+from dashcam_player.utils.ffmpeg import win32_short_path
 from dashcam_player.utils.log import get_logger
 
 log = get_logger()
@@ -56,6 +57,33 @@ def configure_hw_acceleration(cap: cv2.VideoCapture, hw_backends: list[tuple[str
                 cap.set(cv2.CAP_PROP_HW_DEVICE, 0)
         except cv2.error:
             log.warning("設定 CUDA 硬體加速失敗，退回軟體解碼")
+
+
+def open_video_capture(
+    path: str,
+    hw_backends: list[tuple[str, str]] | None = None,
+) -> cv2.VideoCapture:
+    """開啟影片解碼器（CAP_FFMPEG），完整支援中文/Unicode 路徑。
+
+    opencv-python >= 4.8 的 FFmpeg 後端原生接受 UTF-8 路徑（已實測驗證），
+    因此優先直接以原始路徑開啟；僅在失敗時退回 8.3 短檔名
+    （win32_short_path，相容舊版 OpenCV）。
+
+    Args:
+        path: 影片路徑（可含中文/空白/其他 Unicode 字元）
+        hw_backends: detect_hw_backends() 的結果；僅 CUDA 時啟用硬體加速
+
+    Returns:
+        cv2.VideoCapture；若所有方式皆失敗，回傳未開啟的 cap（isOpened() == False），
+        呼叫端需自行檢查 isOpened() 並視為失敗處理。
+    """
+    cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+    if not cap.isOpened():
+        cap.release()
+        cap = cv2.VideoCapture(win32_short_path(path), cv2.CAP_FFMPEG)
+    if cap.isOpened() and hw_backends:
+        configure_hw_acceleration(cap, hw_backends)
+    return cap
 
 
 _FOURCC_DECODE_CACHE: dict[int, str] = {}
@@ -206,6 +234,4 @@ def write_exif_gps(image_path: str, gps_coord: tuple) -> None:
     except ImportError:
         pass
     except Exception as e:
-        from dashcam_player.utils.log import get_logger
-
         get_logger().warning(f"寫入 EXIF GPS 失敗: {e}")

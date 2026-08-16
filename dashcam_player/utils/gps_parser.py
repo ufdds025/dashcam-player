@@ -31,7 +31,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from dashcam_player.utils.ffmpeg import find_ffmpeg, win32_short_path
+from dashcam_player.utils.cv_utils import open_video_capture
+from dashcam_player.utils.ffmpeg import find_ffmpeg
 from dashcam_player.utils.gps_ocr import GPSOCR
 from dashcam_player.utils.gps_roi_detector import GPSROIDetector
 from dashcam_player.utils.log import get_logger
@@ -60,6 +61,50 @@ class GPSPoint:
             "altitude": self.altitude,
             "speed": self.speed,
         }
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """兩點間的大圓距離（公尺）"""
+    import math
+
+    R = 6371000.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def filter_gps_drift(
+    points: Sequence[GPSPoint], max_distance_m: float
+) -> list[GPSPoint]:
+    """過濾 GPS 飄移造成的異常點。
+
+    規則：單點與前一點距離超過門檻，且其前後兩點彼此接近
+    （代表該點跳離軌跡後又跳回原位）→ 視為飄移雜訊丟棄。
+    連續大跳躍（真實快速移動）時前後兩點彼此仍遠，予以保留。
+    端點（首/末點）一律保留。
+    """
+    if max_distance_m <= 0 or len(points) < 3:
+        return list(points)
+    result: list[GPSPoint] = []
+    for i, p in enumerate(points):
+        if 0 < i < len(points) - 1:
+            prev = points[i - 1]
+            nxt = points[i + 1]
+            d_prev = _haversine_m(prev.lat, prev.lon, p.lat, p.lon)
+            d_span = _haversine_m(prev.lat, prev.lon, nxt.lat, nxt.lon)
+            if d_prev > max_distance_m and d_span <= max_distance_m:
+                log.info(
+                    f"GPS 飄移過濾: 丟棄異常點 {p.lat:.6f},{p.lon:.6f} @ {p.time:.1f}s"
+                )
+                continue
+        result.append(p)
+    return result
 
 
 def _parse_iso_time(text: str) -> datetime | None:
@@ -94,7 +139,7 @@ class GPSDetector:
     """快速偵測影片是否包含 GPS 資料。
 
     偵測順序：外部檔案 → 內嵌 metadata → (選擇性) OCR。
-    OCR 為昂貴操作（載入 EasyOCR/torch 2-10 秒），預設 skip。
+    OCR 為昂貴操作（啟動 Tesseract 需載入 tessdata），預設 skip。
     """
 
     def __init__(self, video_path: str, parser: GPSParser, skip_ocr: bool = True) -> None:
@@ -216,15 +261,19 @@ class GPSTrackExtractor:
     # ---- OCR fallback ----
 
     def _extract_from_ocr(self) -> list[GPSPoint]:
-        log.info("外部 GPS 檔案與內嵌 metadata 均無資料，啟動 OCR 辨識...")
+        log.info("外部 GPS 檔案與內嵌 metadata 均無資料，啟動 Tesseract OCR 辨識...")
         if not self._parser._ocr:
             self._parser._ocr = GPSOCR()
-        raw_tracks = self._parser._ocr.extract_tracks(self.video_path, interval_sec=1.0)
+        if self._parser._ocr_roi is not None:
+            log.info(f"OCR 提取使用已設定 ROI: {self._parser._ocr_roi}")
+        raw_tracks = self._parser._ocr.extract_tracks(
+            self.video_path, interval_sec=1.0, roi=self._parser._ocr_roi
+        )
         if not raw_tracks:
             return []
 
         points = [GPSPoint(lat=t["lat"], lon=t["lon"], time=t["time"]) for t in raw_tracks]
-        log.info(f"OCR 提取 {len(points)} 個 GPS 軌跡點")
+        log.info(f"Tesseract 提取 {len(points)} 個 GPS 軌跡點")
         return points
 
 
@@ -258,6 +307,7 @@ class GPSParser:
         self._extraction_attempted: bool = False  # 避免空結果重複掃描
         self._app_settings: AppSettings | None = app_settings
         self._roi_auto_failed: tuple[int, int, str] | None = None
+        self._ocr_roi: tuple[float, float, float, float] | None = None
         self._video_width: int = 0
         self._video_height: int = 0
         self._file_format: str = ""
@@ -266,7 +316,7 @@ class GPSParser:
         self._extractor = GPSTrackExtractor(video_path, self)
 
     def close_ocr(self) -> None:
-        """釋放 OCR 資源（EasyOCR reader + GPU 記憶體）"""
+        """釋放 OCR 資源（Tesseract 進程為無狀態，此處僅清理內部參照）"""
         if self._ocr:
             self._ocr = None
 
@@ -290,13 +340,13 @@ class GPSParser:
           4. 自動偵測成功 → 儲存設定供後續使用
           5. 自動偵測失敗 → 記錄 _roi_auto_failed，供 UI 觸發手動設定
         """
-        log.info("正在啟動文字辨識引擎 (EasyOCR)...")
+        log.info("正在啟動文字辨識引擎 (Tesseract)...")
         try:
             import os
 
             import cv2
 
-            cap = cv2.VideoCapture(win32_short_path(self.video_path))
+            cap = open_video_capture(self.video_path)
             if not cap.isOpened():
                 log.warning("OCR 偵測：無法開啟影片")
                 return False
@@ -316,6 +366,10 @@ class GPSParser:
                 roi_setting = self._app_settings.load_gps_roi(w, h, fmt)
                 if roi_setting:
                     log.info(f"找到已知 ROI 設定: {roi_setting.key}")
+                    self._ocr_roi = (
+                        roi_setting.roi_x, roi_setting.roi_y,
+                        roi_setting.roi_w, roi_setting.roi_h,
+                    )
 
             # 步驟 2: 取樣 3 幀測試
             sample_frames = [0]
@@ -333,8 +387,17 @@ class GPSParser:
                     continue
 
                 if roi_setting:
-                    roi = (roi_setting.roi_x, roi_setting.roi_y, roi_setting.roi_w, roi_setting.roi_h)
+                    roi = (
+                        roi_setting.roi_x, roi_setting.roi_y,
+                        roi_setting.roi_w, roi_setting.roi_h,
+                    )
                     coord = ocr.ocr_frame(frame, roi=roi)
+                    if coord is None:
+                        # ROI 失敗 → 全畫面重試（雙重策略），
+                        # 成功則後續提取改用全畫面（_ocr_roi=None）
+                        coord = ocr.ocr_frame(frame)
+                        if coord is not None:
+                            self._ocr_roi = None
                 else:
                     coord = ocr.ocr_frame(frame)
 
@@ -368,9 +431,10 @@ class GPSParser:
                     )
                     self._app_settings.save_gps_roi(new_setting)
                     log.info(f"GPS ROI 自動偵測成功並已儲存: {new_setting.key}")
+                    self._ocr_roi = result.detected_roi
                     # 用新 ROI 再試一次
                     ocr2 = GPSOCR()
-                    cap2 = cv2.VideoCapture(win32_short_path(self.video_path))
+                    cap2 = open_video_capture(self.video_path)
                     if cap2.isOpened():
                         roi = result.detected_roi
                         for idx in sample_frames:
@@ -403,7 +467,7 @@ class GPSParser:
         """提取所有 GPS 軌跡點
 
         若初始偵測時跳過了 OCR (skip_ocr=True)，但外部檔案與內嵌 metadata
-        皆無 GPS，則在此時才執行 OCR — 確保 EasyOCR/torch 不被非必要載入。
+        皆無 GPS，則在此時才執行 OCR — 確保 Tesseract 不被非必要載入。
         """
         if self._tracks:
             return self._tracks.copy()
@@ -421,6 +485,18 @@ class GPSParser:
         if tracks:
             self._has_gps = True
             self._tracks = sorted(tracks, key=lambda p: p.time)
+            # GPS 飄移過濾（與檔案偵測位置差距過大的異常點丟棄）
+            if self._app_settings is not None:
+                enabled, max_d = self._app_settings.load_gps_filter()
+                if enabled:
+                    filtered = filter_gps_drift(self._tracks, max_d)
+                    dropped = len(self._tracks) - len(filtered)
+                    if dropped:
+                        log.info(
+                            f"GPS 飄移過濾: 移除 {dropped} 個異常點 "
+                            f"(保留 {len(filtered)})"
+                        )
+                    self._tracks = filtered
             return self._tracks.copy()
         return []
 

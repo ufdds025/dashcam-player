@@ -36,6 +36,7 @@ _TILE_CACHE_DIR: str | None = os.path.join(_tempfile.gettempdir(), "dashcam_osm_
 
 _MAX_CACHE_AGE_DAYS = 30
 _MAX_CACHE_FILES = 500
+_MAX_CACHE_SIZE_BYTES = 200 * 1024 * 1024  # 200MB 總大小上限（防長期運行磁碟無限增長）
 
 
 def cleanup_cache(force: bool = False) -> int:
@@ -54,12 +55,15 @@ def cleanup_cache(force: bool = False) -> int:
         for fname in os.listdir(_TILE_CACHE_DIR):
             fpath = os.path.join(_TILE_CACHE_DIR, fname)
             if os.path.isfile(fpath):
-                entries.append((fpath, os.path.getmtime(fpath)))
+                try:
+                    entries.append((fpath, os.path.getmtime(fpath), os.path.getsize(fpath)))
+                except OSError:
+                    continue
         if not entries:
             return 0
 
         if force:
-            for fpath, _ in entries:
+            for fpath, _, _ in entries:
                 try:
                     os.remove(fpath)
                 except OSError:
@@ -72,23 +76,38 @@ def cleanup_cache(force: bool = False) -> int:
         # 第一遍：移除過期檔案
         removed = 0
         remaining = []
-        for fpath, mtime in entries:
+        for fpath, mtime, size in entries:
             if mtime < cutoff:
                 try:
                     os.remove(fpath)
                     removed += 1
                 except OSError:
-                    remaining.append((fpath, mtime))
+                    remaining.append((fpath, mtime, size))
             else:
-                remaining.append((fpath, mtime))
+                remaining.append((fpath, mtime, size))
 
-        # 第二遍：若仍超過上限，刪除最舊的
+        # 第二遍：若仍超過檔案數上限，刪除最舊的
         if len(remaining) > _MAX_CACHE_FILES:
             remaining.sort(key=lambda x: x[1])  # 按修改時間排序
             excess = len(remaining) - _MAX_CACHE_FILES
-            for fpath, _ in remaining[:excess]:
+            for fpath, _, _ in remaining[:excess]:
                 try:
                     os.remove(fpath)
+                    removed += 1
+                except OSError:
+                    pass
+            remaining = remaining[excess:]
+
+        # 第三遍：若總大小超過上限，持續刪除最舊的直到低於上限
+        total_size = sum(size for _, _, size in remaining)
+        if total_size > _MAX_CACHE_SIZE_BYTES:
+            remaining.sort(key=lambda x: x[1])  # 按修改時間排序
+            for fpath, _, size in remaining:
+                if total_size <= _MAX_CACHE_SIZE_BYTES:
+                    break
+                try:
+                    os.remove(fpath)
+                    total_size -= size
                     removed += 1
                 except OSError:
                     pass
@@ -313,20 +332,21 @@ def _trim_memory_cache() -> None:
         _STATIC_MAP_MEMORY_CACHE.popitem(last=False)
 
 
-# 呼叫端須已持有 _CACHE_LOCK
-
-
 def _read_cache(key: str) -> bytes | None:
     """讀取 Tile 快取"""
     if not _TILE_CACHE_DIR:
         return None
     path = os.path.join(_TILE_CACHE_DIR, key)
-    if os.path.isfile(path):
-        # 快取有效期需與 cleanup_cache 的 _MAX_CACHE_AGE_DAYS 一致
-        age = time.time() - os.path.getmtime(path)
-        if age < _MAX_CACHE_AGE_DAYS * 86400:
-            with open(path, "rb") as f:
-                return f.read()
+    try:
+        if os.path.isfile(path):
+            # 快取有效期需與 cleanup_cache 的 _MAX_CACHE_AGE_DAYS 一致
+            age = time.time() - os.path.getmtime(path)
+            if age < _MAX_CACHE_AGE_DAYS * 86400:
+                with open(path, "rb") as f:
+                    return f.read()
+    except OSError:
+        # cleanup_cache 可能併發刪除檔案，屬正常競態，回傳 None 即可
+        pass
     return None
 
 

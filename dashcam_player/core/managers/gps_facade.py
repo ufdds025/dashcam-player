@@ -44,7 +44,37 @@ class GPSFacade(QObject):
         self._video_info: VideoInfo | None = None
 
     def set_gps_manager(self, mgr: GPSManager | None) -> None:
+        """設定 GPSManager 並管理其信號生命週期。
+
+        disconnect 舊 manager 的已連信號，再 connect 新 manager 的三組信號，
+        Controller 不需自行操作信號。
+        """
+        old = self._gps_manager
+        if old is not None:
+            try:
+                old.gps_loaded.disconnect(self.on_gps_loaded)
+            except TypeError:
+                pass
+            try:
+                old.gps_status_message.disconnect(self._on_gps_status_message)
+            except TypeError:
+                pass
+            try:
+                old.gps_roi_setup_needed.disconnect(self.on_roi_setup_needed)
+            except TypeError:
+                pass
         self._gps_manager = mgr
+        if mgr is not None:
+            mgr.gps_loaded.connect(self.on_gps_loaded)
+            mgr.gps_status_message.connect(self._on_gps_status_message)
+            mgr.gps_roi_setup_needed.connect(self.on_roi_setup_needed)
+
+    def _on_gps_status_message(self, msg: str) -> None:
+        self.status_message.emit(msg)
+
+    @property
+    def manager(self) -> GPSManager | None:
+        return self._gps_manager
 
     def set_app_settings(self, settings: AppSettings) -> None:
         self._app_settings = settings
@@ -166,4 +196,4 @@ class GPSFacade(QObject):
     def close_gps_manager(self) -> None:
         if self._gps_manager:
             self._gps_manager.close()
-            self._gps_manager = None
+            self.set_gps_manager(None)

@@ -26,7 +26,7 @@ exclude = ["__pycache__", "dist", ".opencode"]
 files = ["dashcam_player"]
 
 [[tool.mypy.overrides]]
-module = ["cv2.*", "PyQt5.*", "easyocr.*", "piexif.*", "numpy.*", "requests.*"]
+module = ["cv2.*", "PyQt5.*", "pytesseract.*", "piexif.*", "numpy.*", "requests.*"]
 ignore_missing_imports = true
 
 # PyQt5 模組型別注解不完整（stub 缺 union-attr / attr-defined），逐一抑制
@@ -57,7 +57,7 @@ module = [
 ]
 disable_error_code = ["arg-type"]
 
-# EasyOCR reader.readtext 回傳型別 stub 不完整
+# Tesseract OCR 回傳型別 stub 不完整
 [[tool.mypy.overrides]]
 module = "dashcam_player.utils.gps_ocr"
 disable_error_code = ["attr-defined", "assignment"]
@@ -76,3 +76,11 @@ disable_error_code = ["attr-defined"]
 [[tool.mypy.overrides]]
 module = "dashcam_player.tests.test_video_worker"
 disable_error_code = ["misc"]
+
+# 測試檔 cv2 動態 API（VideoWriter_fourcc 不在 stubs）
+[[tool.mypy.overrides]]
+module = [
+    "dashcam_player.tests.test_cv_utils",
+    "dashcam_player.tests.test_performance",
+]
+disable_error_code = ["attr-defined"]

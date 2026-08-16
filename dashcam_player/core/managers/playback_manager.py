@@ -37,11 +37,12 @@ class PlaybackManager(QObject):
         self._gps_throttle_counter: int = 0
         self._gps_throttle_interval: int = 5
         self._gps_manual_seek: bool = False
+        self._playback_speed: float = 1.0
 
     def connect_worker_signals(self) -> None:
         self._worker.frame_ready.connect(self._on_frame_ready)
         self._worker.position_changed.connect(self._on_position_changed)
-        self._worker.load_finished.connect(self._on_play_finished)
+        self._worker.play_finished.connect(self._on_play_finished)
         self._worker.video_info_ready.connect(self._on_video_info_ready)
 
     # ---- properties ----
@@ -156,7 +157,10 @@ class PlaybackManager(QObject):
         self.seek(target)
 
     def set_playback_speed(self, speed: float) -> None:
-        self._worker.set_target_fps(self.fps * speed)
+        """記錄速度倍率；有影片時立即套用（換影片後由 _on_video_info_ready 重套）。"""
+        self._playback_speed = speed
+        if self._video_info:
+            self._worker.set_target_fps(self.fps * speed)
 
     def step_forward(self) -> None:
         self._gps_manual_seek = True
@@ -183,6 +187,8 @@ class PlaybackManager(QObject):
 
     def _on_video_info_ready(self, info: VideoInfo) -> None:
         self._video_info = info
+        # 換影片時重算 target fps（否則沿用舊影片值，倍率錯亂）
+        self._worker.set_target_fps(info.fps * self._playback_speed)
         self.video_info_ready.emit(info)
 
     def _on_position_changed(self, sec: float, frame_idx: int) -> None:

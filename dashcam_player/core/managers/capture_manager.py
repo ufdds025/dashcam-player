@@ -38,8 +38,8 @@ class CaptureManager(QObject):
 
     batch_progress = pyqtSignal(int, int)
     batch_finished = pyqtSignal(int, int)
-    load_failed = pyqtSignal(str)
     status_message = pyqtSignal(str)
+    error_occurred = pyqtSignal(str, str)  # (title, message)
 
     def __init__(
         self,
@@ -74,12 +74,17 @@ class CaptureManager(QObject):
         return None
 
     def check_batch_conflict(self, out_dir: str, prefix: str, ext: str) -> list[str]:
+        """列出與批次截圖會衝突的既有檔案。
+
+        批次命名為 ``{prefix}_frame{idx:06d}.{ext}``，單張為 ``{prefix}_{timestamp}.{ext}``，
+        兩者皆以 ``{prefix}_`` 開頭，故以此為比對基準。
+        """
         if not os.path.isdir(out_dir):
             return []
         return [
             f
             for f in os.listdir(out_dir)
-            if f.startswith(f"{prefix}_frame") and f.endswith(f".{ext}")
+            if f.startswith(f"{prefix}_") and f.endswith(f".{ext}")
         ]
 
     # ---- single capture ----
@@ -110,13 +115,13 @@ class CaptureManager(QObject):
             params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
         ok = imwrite_safe(path, frame_out, params)
         if not ok:
-            self.load_failed.emit(f"Save failed: {path}")
+            self.error_occurred.emit("儲存失敗", f"無法寫入圖片:\n{path}")
             return None
         if gps_coord:
             try:
                 write_exif_gps(path, gps_coord)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning(f"寫入 EXIF GPS 失敗: {e}（{path}）")
         self.status_message.emit(f"Capture saved: {fname}")
         return path
 
@@ -135,6 +140,11 @@ class CaptureManager(QObject):
             return
         if capture_fps > original_fps:
             capture_fps = int(original_fps)
+
+        if self._batch_worker is not None and self._batch_worker.isRunning():
+            log.warning("批次截圖已在執行中，忽略重複請求")
+            self.status_message.emit("批次截圖已在執行中")
+            return
 
         gps_data: list = []
         if gps_manager and gps_manager.is_loaded():
@@ -187,7 +197,7 @@ class CaptureManager(QObject):
         self._batch_worker = None
 
     def _on_batch_failed(self, msg: str) -> None:
-        self.load_failed.emit(msg)
+        self.error_occurred.emit("批次截圖失敗", msg)
         self._batch_worker = None
 
     # ---- helpers ----

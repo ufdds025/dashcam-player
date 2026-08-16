@@ -203,10 +203,12 @@ def get_keyframe_positions(video_path: str, ffprobe_path: str | None = None) -> 
         ffprobe_path,
         "-v",
         "error",
+        "-skip_frame",
+        "nokey",  # 只輸出關鍵幀，長影片輸出量減少 10~100 倍
         "-select_streams",
         "v:0",
         "-show_entries",
-        "frame=pts_time,key_frame",
+        "frame=pts_time",
         "-of",
         "csv=p=0",
         video_path,
@@ -225,13 +227,12 @@ def get_keyframe_positions(video_path: str, ffprobe_path: str | None = None) -> 
             line = line.strip()
             if not line:
                 continue
-            # csv: key_frame,pts_time
+            # csv（skip_frame nokey 後只有 pts_time；相容舊格式 key_frame,pts_time）
             parts = line.split(",")
-            if len(parts) >= 2 and parts[0].strip() == "1":
-                try:
-                    times.append(float(parts[1]))
-                except ValueError:
-                    continue
+            try:
+                times.append(float(parts[-1]))
+            except ValueError:
+                continue
         return sorted(times)
     except (subprocess.TimeoutExpired, OSError):
         return None

@@ -39,6 +39,8 @@ class GpsDisplaySettings:
     skip_gps_overlay: bool = False
     map_provider: str = "osm"
     google_maps_api_key: str = ""
+    gps_filter_enabled: bool = False
+    gps_filter_max_distance: float = 2000.0
 
 
 # 所有 sub-dataclass 欄位名的並集，用於 __getattr__ 委派

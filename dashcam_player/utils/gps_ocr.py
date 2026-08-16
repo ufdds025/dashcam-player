@@ -16,13 +16,15 @@
 
 from __future__ import annotations
 
+import os
 import re
-from typing import Any
+import subprocess
+import tempfile
 
 import cv2
 import numpy as np
 
-from dashcam_player.utils.ffmpeg import win32_short_path
+from dashcam_player.utils.cv_utils import open_video_capture
 from dashcam_player.utils.log import get_logger
 
 log = get_logger()
@@ -35,55 +37,72 @@ log = get_logger()
 _GPS_PATTERN = re.compile(r"(\d{1,3}\.\d{2,})\s*([NS])\s*[,，\s]\s*(\d{1,3}\.\d{2,})\s*([EW])")
 
 
-class GPSOCR:
-    """從影片畫面 OCR 辨識 GPS 座標
+def _run_tesseract(
+    image: np.ndarray, config: str = "--psm 6"
+) -> str | None:
+    """使用 Tesseract 命令行進行 OCR 處理
 
-    EasyOCR reader 為模組層級單例，同一次執行期間所有影片共用，
-    避免每次開新影片都重新載入（2-10 秒）。
+    Args:
+        image: 灰階 numpy 陣列
+        config: Tesseract 組態字串，--psm 6 表示整體文字區塊
+
+    Returns:
+        辨識出的文字，失敗時回傳 None
     """
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="dashcam_ocr_")
+        os.close(fd)
 
-    _shared_reader = None  # 模組層級單例，跨影片重用
-
-    def __init__(self) -> None:
-        self._reader = None
-
-    @classmethod
-    def close_shared_reader(cls) -> None:
-        """釋放共享 EasyOCR reader（程式結束時呼叫）"""
-        cls._shared_reader = None
-
-    def _get_reader(self):
-        """延遲初始化 EasyOCR reader（共享單例）"""
-        # 優先使用實例級 reader（測試注入用），否則用共享單例
-        if self._reader is not None:
-            return self._reader
-        if GPSOCR._shared_reader is not None:
-            self._reader = GPSOCR._shared_reader
-            return self._reader
-        try:
-            import easyocr
-
-            gpu = self._detect_cuda()
-            GPSOCR._shared_reader = easyocr.Reader(["en"], gpu=gpu)
-            self._reader = GPSOCR._shared_reader
-            log.info(f"EasyOCR reader 已初始化 (GPU={'啟用' if gpu else '停用'})")
-        except ImportError:
-            log.error("easyocr 未安裝，請執行: pip install easyocr")
+        success = cv2.imwrite(tmp_path, image)
+        if not success:
+            log.error("Tesseract：無法將影像寫入暫存檔案")
             return None
-        except Exception as e:
-            log.error(f"EasyOCR 初始化失敗: {e}")
+
+        cmd = ["tesseract", tmp_path, "stdout"] + config.split()
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+            log.warning(f"Tesseract 執行失敗: {stderr.strip()}")
             return None
-        return self._reader
 
-    @staticmethod
-    def _detect_cuda() -> bool:
-        """偵測 CUDA 是否可用"""
-        try:
-            import torch
+        stdout = result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
+        text = stdout.strip()
+        return text if text else None
+    except FileNotFoundError:
+        log.error(
+            "Tesseract 二進位檔未找到！請先安裝 Tesseract OCR 並確保已加入 PATH。"
+        )
+        return None
+    except Exception as e:
+        log.warning(f"Tesseract 執行例外: {e}")
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
-            return torch.cuda.is_available()
-        except ImportError:
-            return False
+
+class GPSOCR:
+    """從影片畫面 OCR 辨識 GPS 座標 - Tesseract 版本
+
+    優點：
+    - 無 PyTorch / CUDA 依賴，安裝極輕量
+    - .exe 封裝體積增加極小（僅需包含 tesseract 二進位檔）
+    - 處理 30-60 分鐘影片的總時間仍在可接受範圍（~30-60 秒）
+    - 任何作業系統（Windows/macOS/Linux）皆可運行
+
+    缺點：
+    - 僅支援標準印刷體文字，手寫體辨識能力較差
+    - GPS 文字通常為印刷體，足夠使用
+    """
 
     def ocr_frame(
         self, frame: np.ndarray, roi: tuple[float, float, float, float] | None = None
@@ -91,86 +110,97 @@ class GPSOCR:
         """從單幀畫面辨識 GPS 座標，回傳 (lat, lon) 或 None
 
         Args:
-            frame: 影片幀（BGR）
+            frame: 影片幀（BGR 格式，numpy ndarray）
             roi: 選用的 ROI (x, y, w, h) 相對座標 0~1，
-                 提供時跳過 4 角落掃描，直接裁切該區域後 readtext。
+                 提供時裁切該區域後 readtext。
+
+        Returns:
+            (lat, lon) 座標組，若辨識失敗回傳 None
         """
-        reader: Any = self._get_reader()
-        if reader is None:
-            return None
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         if roi is not None:
-            return self._ocr_with_roi(frame, reader, roi)
+            x1 = int(roi[0] * gray.shape[1])
+            y1 = int(roi[1] * gray.shape[0])
+            x2 = int((roi[0] + roi[2]) * gray.shape[1])
+            y2 = int((roi[1] + roi[3]) * gray.shape[0])
+            # 對外擴充邊距，避免緊貼文字的 ROI 裁切到文字
+            pad_x = max(4, int((x2 - x1) * 0.05))
+            pad_y = max(4, int((y2 - y1) * 0.15))
+            x1 = max(0, x1 - pad_x)
+            y1 = max(0, y1 - pad_y)
+            x2 = min(gray.shape[1], x2 + pad_x)
+            y2 = min(gray.shape[0], y2 + pad_y)
+            if x2 <= x1 or y2 <= y1:
+                return None
+            gray = gray[y1:y2, x1:x2].copy()
 
-        # 策略 1: 依序嘗試 4 個角落裁切區域（較快）
-        rois = self._crop_all_corners(frame)
-        for corner_roi in rois:
-            if corner_roi is None:
-                continue
-            # 嘗試多種預處理方式
-            for processed in self._preprocess_multi(corner_roi):
-                results = reader.readtext(processed)
-                for _, text, _conf in results:
-                    coord = self._parse_gps_text(text)
-                    if coord is not None:
-                        return coord
-                combined = " ".join(t for _, t, _ in results)
-                coord = self._parse_gps_text(combined)
+        return self._recognize(gray)
+
+    def _recognize(self, gray: np.ndarray) -> tuple[float, float] | None:
+        """對灰階影像做 OCR 辨識（多策略依序嘗試）
+
+        順序：
+          1. CLAHE 灰階直送（Tesseract 內部自適應二值化，效果最佳）
+          2. Otsu 二值化
+          3. Otsu 放大 2x/3x（對小字元有效）
+        """
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+
+        # 策略 1: 灰階直送
+        text = _run_tesseract(enhanced, config="--psm 6")
+        if text:
+            coord = self._parse_gps_text(text)
+            if coord is not None:
+                return coord
+
+        # 策略 2: Otsu 二值化
+        _, binary = cv2.threshold(
+            enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        text2 = _run_tesseract(binary, config="--psm 6")
+        if text2:
+            coord = self._parse_gps_text(text2)
+            if coord is not None:
+                return coord
+        text3 = _run_tesseract(binary, config="--psm 3")
+        if text3:
+            coord = self._parse_gps_text(text3)
+            if coord is not None:
+                return coord
+
+        # 策略 3: 放大重試
+        for scale in (2.0, 3.0):
+            up = cv2.resize(
+                binary, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR
+            )
+            text4 = _run_tesseract(up, config="--psm 6")
+            if text4:
+                coord = self._parse_gps_text(text4)
                 if coord is not None:
                     return coord
 
-        # 策略 2: 全畫面 OCR（較慢但較準確）
-        results = reader.readtext(frame)
-        for _, text, _conf in results:
-            coord = self._parse_gps_text(text)
-            if coord is not None:
-                return coord
-        combined = " ".join(t for _, t, _ in results)
-        return self._parse_gps_text(combined)
+        return None
 
-    def _ocr_with_roi(
+    def extract_tracks(
         self,
-        frame: np.ndarray,
-        reader: Any,
-        roi: tuple[float, float, float, float],
-    ) -> tuple[float, float] | None:
-        """使用已知 ROI 裁切後直接 readtext（0-1 次呼叫）"""
-        h, w = frame.shape[:2]
-        x1 = int(roi[0] * w)
-        y1 = int(roi[1] * h)
-        x2 = int((roi[0] + roi[2]) * w)
-        y2 = int((roi[1] + roi[3]) * h)
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(w, x2)
-        y2 = min(h, y2)
-        if x2 <= x1 or y2 <= y1:
-            return None
-
-        cropped = frame[y1:y2, x1:x2].copy()
-        gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-        scaled = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        _, binary = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        results = reader.readtext(binary)
-        for _, text, _conf in results:
-            coord = self._parse_gps_text(text)
-            if coord is not None:
-                return coord
-        combined = " ".join(t for _, t, _ in results)
-        return self._parse_gps_text(combined)
-
-    def extract_tracks(self, video_path: str, interval_sec: float = 1.0) -> list[dict]:
+        video_path: str,
+        interval_sec: float = 1.0,
+        roi: tuple[float, float, float, float] | None = None,
+    ) -> list[dict]:
         """從影片均勻取樣提取 GPS 軌跡
 
         Args:
             video_path: 影片路徑
             interval_sec: 取樣間隔（秒），預設 1 秒
+            roi: 選用的 ROI (x, y, w, h) 相對座標 0~1，
+                 提供時僅對該區域做 OCR 辨識
 
         Returns:
             list of {"lat": float, "lon": float, "time": float}
         """
-        cap = cv2.VideoCapture(win32_short_path(video_path))
+        cap = open_video_capture(video_path)
         if not cap.isOpened():
             log.error(f"無法開啟影片: {video_path}")
             return []
@@ -201,10 +231,9 @@ class GPSOCR:
             if not ret:
                 break
 
-            coord = self.ocr_frame(frame)
+            coord = self.ocr_frame(frame, roi=roi)
             if coord is not None:
                 lat, lon = coord
-                # 去重：與上一個點相同則跳過
                 if last_coord is not None:
                     if abs(lat - last_coord[0]) < 1e-6 and abs(lon - last_coord[1]) < 1e-6:
                         frame_idx += frame_interval
@@ -221,83 +250,15 @@ class GPSOCR:
         log.info(f"OCR 取樣完成: {len(tracks)} 個軌跡點")
         return tracks
 
-    def _crop_all_corners(self, frame: np.ndarray) -> list[np.ndarray | None]:
-        """裁切 4 個角落的 GPS 文字區域
-
-        行車紀錄器 GPS 文字通常出現在:
-        - 左上角（最常見）
-        - 右上角
-        - 左下角
-        - 右下角
-
-        回傳: [左上, 右上, 左下, 右下] 的裁切結果列表
-        """
-        h, w = frame.shape[:2]
-        if h < 20 or w < 20:
-            return []
-
-        # 裁切比例：高度 15%、寬度 50%（GPS 文字通常跨多行）
-        crop_h = int(h * 0.15)
-        crop_w = int(w * 0.50)
-
-        # 左上角
-        top_left = frame[0:crop_h, 0:crop_w].copy()
-        # 右上角
-        top_right = frame[0:crop_h, w - crop_w : w].copy()
-        # 左下角
-        bottom_left = frame[h - crop_h : h, 0:crop_w].copy()
-        # 右下角
-        bottom_right = frame[h - crop_h : h, w - crop_w : w].copy()
-
-        return [top_left, top_right, bottom_left, bottom_right]
-
-    def _preprocess_multi(self, roi: np.ndarray) -> list[np.ndarray]:
-        """多種預處理方式，提升不同字體/背景的辨識率
-
-        回傳: 多種預處理結果的列表
-        """
-        results = []
-
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        scaled = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-
-        # 方式 1: OTSU 二值化（標準）
-        _, binary_otsu = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        results.append(binary_otsu)
-
-        # 方式 2: 反轉 + OTSU（處理白字黑底）
-        _, binary_inv = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        results.append(binary_inv)
-
-        # 方式 3: 自適應二值化（處理不均勻照明）
-        adaptive = cv2.adaptiveThreshold(
-            scaled, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-        )
-        results.append(adaptive)
-
-        # 方式 4: CLAHE 對比增強 → OTSU（白天低對比度場景）
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(scaled)
-        _, binary_clahe = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        results.append(binary_clahe)
-
-        # 方式 5: CLAHE → 反轉（白天白字場景）
-        _, binary_clahe_inv = cv2.threshold(
-            enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-        )
-        results.append(binary_clahe_inv)
-
-        # 方式 6: 邊緣偵測（Canny）→ 膨脹（強化文字輪廓）
-        edges = cv2.Canny(scaled, 50, 150)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        dilated = cv2.dilate(edges, kernel, iterations=1)
-        results.append(dilated)
-
-        return results
-
     @staticmethod
     def _parse_gps_text(text: str) -> tuple[float, float] | None:
-        """從 OCR 文字中解析 GPS 座標"""
+        """從 OCR 文字中解析 GPS 座標
+
+        支援格式:
+        - 24.338535N 120.455958E
+        - 24.338535N, 120.455958E
+        - N24.338535 E120.455958
+        """
         if not text:
             return None
 

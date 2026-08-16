@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -42,6 +43,34 @@ class GPSSettingsDialog(QDialog):
             "若影片已內建 GPS 座標浮水印，勾選可避免疊加重複",
         )
         layout.addWidget(self.skip_overlay_check)
+
+        layout.addSpacing(8)
+
+        filter_group = QGroupBox("GPS 訊號過濾")
+        filter_layout = QVBoxLayout(filter_group)
+
+        self.filter_check = QCheckBox("啟用 GPS 訊號漂移過濾")
+        self.filter_check.setChecked(settings.gps_filter_enabled)
+        self.filter_check.setToolTip(
+            "忽略與前後位置差距過大的異常 GPS 訊號（GPS 飄移）",
+        )
+        self.filter_check.toggled.connect(self._on_filter_toggle)
+        filter_layout.addWidget(self.filter_check)
+
+        dist_layout = QHBoxLayout()
+        dist_layout.addWidget(QLabel("最大允許距離 (公尺):"))
+        self.max_dist_spin = QDoubleSpinBox()
+        self.max_dist_spin.setRange(1.0, 100000.0)
+        self.max_dist_spin.setDecimals(0)
+        self.max_dist_spin.setSingleStep(100.0)
+        self.max_dist_spin.setValue(settings.gps_filter_max_distance)
+        self.max_dist_spin.setSuffix(" m")
+        self.max_dist_spin.setEnabled(settings.gps_filter_enabled)
+        dist_layout.addWidget(self.max_dist_spin)
+        dist_layout.addStretch()
+        filter_layout.addLayout(dist_layout)
+
+        layout.addWidget(filter_group)
 
         layout.addSpacing(8)
 
@@ -92,6 +121,9 @@ class GPSSettingsDialog(QDialog):
         is_google = self.google_radio.isChecked()
         self.api_key_edit.setEnabled(is_google)
 
+    def _on_filter_toggle(self, checked: bool) -> None:
+        self.max_dist_spin.setEnabled(checked)
+
     def _toggle_api_key_visible(self, checked: bool) -> None:
         self.api_key_edit.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
         self._show_key_btn.setText("隱藏" if checked else "顯示")
@@ -102,6 +134,8 @@ class GPSSettingsDialog(QDialog):
             skip_gps_overlay=self.skip_overlay_check.isChecked(),
             map_provider="google" if self.google_radio.isChecked() else "osm",
             google_maps_api_key=self.api_key_edit.text().strip(),
+            gps_filter_enabled=self.filter_check.isChecked(),
+            gps_filter_max_distance=self.max_dist_spin.value(),
         )
         self.accept()
 

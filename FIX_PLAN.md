@@ -1,7 +1,65 @@
 # 行車紀錄器影片播放與截圖工具 - 修正計畫 & 完成報告
 
 > 生成日期：2026-06-13
-> 總計：9 項缺失 → **9 項已修正** (Round 1) + **12 項新發現 → 12 項已修正** (Round 2) + **5 項 GPS Bug → 5 項已修正** (Round 3)
+> 總計：9 項缺失 → **9 項已修正** (Round 1) + **12 項新發現 → 12 項已修正** (Round 2) + **5 項 GPS Bug → 5 項已修正** (Round 3) + **7 項 GPS 範圍設定 Bug + 1 新功能 → 全部完成** (Round 4)
+
+---
+
+## Round 4 修正摘要（2026-08-16 — GPS 文字偵測範圍設定 & OCR 辨識品質）
+
+| 優先級 | 項目 | 類別 | 檔案 | 狀態 |
+|--------|------|------|------|------|
+| P0 | #27 ROI 選取框拖曳壓扁成 1x1 / 縮放失效（`parentItem()` 為 None） | 正確性 | gps_roi_adjust.py | ✅ |
+| P0 | #28 設定的 ROI 未套用於全片 OCR 提取（`extract_tracks` 忽略 roi） | 正確性 | gps_ocr.py, gps_parser.py | ✅ |
+| P0 | #29 ROI 裁切強制 2x 放大傷害辨識（`24.338535` → `24.53585355`） | 正確性 | gps_ocr.py | ✅ |
+| P0 | #30 緊貼文字的 ROI 辨識失敗（Otsu 全域門檻偏移） | 正確性 | gps_ocr.py | ✅ |
+| P1 | #31 ROI 辨識失敗時無全畫面備援（AGENTS.md 記載但未實作） | 穩定性 | gps_parser.py | ✅ |
+| P1 | #32 繪製模式舊 ROI 方框殘留 / `scene.addItem` 重複加入警告 | 使用者體驗 | gps_roi_adjust.py | ✅ |
+| P2 | #33 GPS 訊號漂移過濾（新功能：可忽略與偵測位置差距過大的異常點） | 新功能 | gps_parser.py, settings.py, gps_settings.py, capture_settings.py | ✅ |
+
+---
+
+## Round 4 各項修正詳情
+
+### #27 🔴 ROI 選取框拖曳/縮放失效 ✅
+- **位置**: `ui/dialogs/gps_roi_adjust.py` — `_display_frame()` / `_on_view_mouse_release()`
+- **變更**: `_ResizableRectItem` 改以 `parent=image_item` 建立（child 自動加入 scene）
+- **原因**: 選取框直接 `scene.addItem()` 加入時 `parentItem()` 為 `None`，clamp 範圍退化成 `QRectF(0,0,1,1)` → 拖曳瞬間方框被壓扁成 1x1 像素、縮放因 `width>20` 檢查永遠失敗，範圍無法設定
+- **實測**: 拖曳/縮放/邊界 clamp 全部恢復正常
+
+### #28 🔴 設定的 ROI 未套用於全片提取 ✅
+- **位置**: `utils/gps_ocr.py:159` `extract_tracks()` / `utils/gps_parser.py` `_extract_from_ocr()`
+- **變更**:
+  - `GPSOCR.extract_tracks()` 新增 `roi` 參數並傳入每幀 `ocr_frame(..., roi=roi)`
+  - `GPSParser._ocr_roi` 記錄偵測階段使用的 ROI（已知設定或自動偵測結果），`_extract_from_ocr()` 帶入提取
+- **原因**: 全片軌跡提取呼叫 `ocr_frame(frame)` 完全沒帶 ROI，只有偵測探測階段使用 → 使用者框好的範圍在實際提取時被忽略，GPS 偵測不到
+
+### #29 🔴 ROI 裁切強制 2x 放大傷害辨識 ✅
+- **位置**: `utils/gps_ocr.py` `_recognize()`
+- **變更**: 移除無條件 `cv2.resize(fx=2, INTER_CUBIC)`，改為多策略依序嘗試：**CLAHE 灰階直送**（Tesseract 內部自適應二值化，實測最準）→ Otsu 二值化 → Otsu 放大 2x/3x（僅小字最後備援）
+- **原因**: 實測中大型文字（28px）2x INTER_CUBIC 放大後 `24.338535` 被誤判成 `24.53585355`（3→5）；無放大 100% 正確。小字（14px）則需放大 3x 才正確，故放大降為 fallback
+- **實測**: 大字/小字 × 寬框/緊框 四種情境全數正確辨識 `24.338535, 120.455958`
+
+### #30 🔴 緊貼文字的 ROI 辨識失敗 ✅
+- **位置**: `utils/gps_ocr.py` `ocr_frame()`
+- **變更**: ROI 裁切前先對外擴充邊距（寬 5% / 高 15%，最小 4px）
+- **原因**: 緊貼文字的裁切（無邊距）時 Otsu 全域門檻在「大片純色背景 + 小面積文字」下把文字筆畫侵蝕掉，OCR 輸出 `Z4.Q90099N` 垃圾 → 回傳 None → 偵測失敗
+
+### #31 🟡 ROI 失敗無全畫面備援 ✅
+- **位置**: `utils/gps_parser.py` `_has_ocr_gps()`
+- **變更**: 已知 ROI 在取樣幀上辨識失敗時自動退回全畫面 OCR；全畫面成功時把 `parser._ocr_roi` 設為 `None`，後續全片提取也走全畫面
+- **原因**: AGENTS.md 記載的「ROI 失敗時改用全畫面 OCR」雙重策略從未實作——ROI 一失敗就整段放棄（且因已存在 ROI 設定而跳過自動偵測）
+
+### #32 🟡 繪製模式舊框殘留 + addItem 警告 ✅
+- **位置**: `ui/dialogs/gps_roi_adjust.py` `_toggle_draw_mode()` / `_on_view_mouse_release()`
+- **變更**: 進入繪製模式隱藏舊 `_roi_item`；繪製完成時先 `scene.removeItem()` 舊框再替換；移除帶 parent item 的多餘 `scene.addItem()`（child 已自動加入）
+- **原因**: 舊的綠色方框在繪製新框時仍顯示造成干擾；`QGraphicsScene::addItem: item has already been added to this scene` 警告來自對已帶 parent 的 item 重複 addItem
+
+### #33 🟢 GPS 訊號漂移過濾（新功能） ✅
+- **位置**: `utils/gps_parser.py`（`_haversine_m()` + `filter_gps_drift()`）、`config/settings.py`（`load_gps_filter()`）、`models/capture_settings.py`（`gps_filter_enabled` / `gps_filter_max_distance`）、`ui/dialogs/gps_settings.py`（過濾群組 UI）
+- **變更**: GPS 設定對話框新增「GPS 訊號過濾」勾選 + 最大距離（預設 2000m）。`extract_gps_tracks()` 提取完成時套用過濾：丟棄「與前一點距離超過門檻且前後兩點彼此接近」的飄移點（跳離軌跡又跳回原位）；連續大跳躍（真實快速移動）與端點保留
+- **原因**: GPS 訊號（尤其 OCR 辨識）偶發飄移產生遠離實際位置的異常點，需可設定的過濾機制
+- **測試**: 新增 7 個單元測試（haversine 距離、突波丟棄、連續移動保留、端點保留、門檻停用、短軌跡）
 
 ---
 

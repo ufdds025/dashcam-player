@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 
-import numpy as np
 import pytest
 
 from dashcam_player.models.gps_roi import GPSROIDetectionResult, GPSROISetting
@@ -241,7 +240,7 @@ class TestBBoxToCorner:
 
 
 class TestGPSROIDetector:
-    """GPSROIDetector 的單元測試（不依賴 EasyOCR）"""
+    """GPSROIDetector 的單元測試（不依賴 EasyOCR，純 OpenCV 實作）"""
 
     def test_detect_empty_video(self, tmp_path) -> None:
         """不存在的影片回傳 None"""
@@ -255,9 +254,9 @@ class TestGPSROIDetector:
         """靜態方法 _is_gps_bbox 的單元測試"""
         from dashcam_player.utils.gps_roi_detector import GPSROIDetector
 
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame_h, frame_w = 1080, 1920
         bbox: list[list[float]] = [[10.0, 10.0], [200.0, 10.0], [200.0, 40.0], [10.0, 40.0]]
-        assert GPSROIDetector._is_gps_bbox(bbox, frame)
+        assert GPSROIDetector._is_gps_bbox(bbox, frame_w, frame_h)
 
         bbox_center: list[list[float]] = [[800.0, 400.0], [1000.0, 400.0], [1000.0, 430.0], [800.0, 430.0]]
-        assert not GPSROIDetector._is_gps_bbox(bbox_center, frame)
+        assert not GPSROIDetector._is_gps_bbox(bbox_center, frame_w, frame_h)

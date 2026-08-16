@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from dashcam_player.utils.cv_utils import (
     apply_resolution,
     decode_fourcc,
     imwrite_safe,
+    open_video_capture,
     overlay_gps_text,
 )
 
@@ -64,3 +66,40 @@ class TestImwriteSafe:
         path = str(tmp_path / "test.png")
         ok = imwrite_safe(path, frame_small)
         assert ok
+
+
+class TestOpenVideoCapture:
+    """open_video_capture 應原生支援中文/Unicode 路徑（opencv-python >= 4.8）。"""
+
+    @staticmethod
+    def _make_video(tmp_path, name: str = "test.mp4") -> str:
+        path = str(tmp_path / name)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(path, fourcc, 30.0, (64, 64))
+        if not writer.isOpened():
+            pytest.skip("mp4v 編碼器不可用，無法生成測試影片")
+        for i in range(30):
+            writer.write(np.full((64, 64, 3), i * 8, dtype=np.uint8))
+        writer.release()
+        return path
+
+    def test_open_ascii_path(self, tmp_path) -> None:
+        path = self._make_video(tmp_path)
+        cap = open_video_capture(path)
+        assert cap.isOpened()
+        ret, frame = cap.read()
+        assert ret and frame is not None
+        cap.release()
+
+    def test_open_unicode_path(self, tmp_path) -> None:
+        path = self._make_video(tmp_path, "測試影片_2026_空間 .mp4")
+        cap = open_video_capture(path)
+        assert cap.isOpened(), "opencv >= 4.8 應原生支援中文路徑開啟影片"
+        ret, _ = cap.read()
+        assert ret
+        cap.release()
+
+    def test_nonexistent_file_returns_closed_cap(self, tmp_path) -> None:
+        cap = open_video_capture(str(tmp_path / "no_such_file.mp4"))
+        assert not cap.isOpened()
+        cap.release()
