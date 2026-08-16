@@ -25,7 +25,7 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libxcb-xinerama0
+          sudo apt-get install -y ffmpeg libxcb-xinerama0 libgl1 libegl1 libopengl0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-render-util0
 
       - name: Install Python dependencies
         run: |
@@ -40,6 +40,8 @@ jobs:
         run: mypy dashcam_player/
 
       - name: Test (pytest)
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: pytest
 
   build-exe:
