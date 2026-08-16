@@ -201,6 +201,17 @@ pyinstaller --onefile --name DashcamPlayer --console ^
 - `find_ffmpeg()` 會優先檢查 `sys._MEIPASS`（PyInstaller 解壓路徑）
 - 若不需 FFmpeg 可拔除 `--add-data` 行
 
+### CI 自動封裝（.github/workflows/ci.yml `build-exe` job）
+
+推 `v*` tag 時，GitHub Actions 在 `windows-latest` 自動建置並上傳至 Release：
+
+- 下載 FFmpeg essentials build（gyan.dev）→ `--add-data` 封裝進 exe
+- 使用 Python 3.11 + PyInstaller，指令與上方手動流程相同
+- 產出 `DashcamPlayer.exe` 同時上傳 artifact 與 GitHub Release
+- 需 `contents: write` permission（`softprops/action-gh-release`）
+
+推 tag 範例：`git tag v1.0.0 && git push origin v1.0.0`
+
 ## 無用／不存在
 
 - 沒有 `README`
