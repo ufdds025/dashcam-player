@@ -108,4 +108,6 @@ class MapView(QWidget):
             log.warning("地圖 HTML 載入失敗")
 
     def closeEvent(self, event) -> None:
+        self.web_view.loadFinished.disconnect(self._on_load_finished)
+        self.web_view.setHtml("")
         super().closeEvent(event)

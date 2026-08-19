@@ -22,17 +22,15 @@ from __future__ import annotations
 
 import binascii
 import bisect
-import json
 import os
 import re
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from dashcam_player.utils.cv_utils import open_video_capture
-from dashcam_player.utils.ffmpeg import find_ffmpeg
+from dashcam_player.utils.cv_utils import open_video_capture, sample_frame_indices
+from dashcam_player.utils.ffmpeg import ffprobe_json, find_ffmpeg
 from dashcam_player.utils.gps_ocr import GPSOCR
 from dashcam_player.utils.gps_roi_detector import GPSROIDetector
 from dashcam_player.utils.log import get_logger
@@ -152,7 +150,7 @@ class GPSDetector:
             return True
         if self._has_embedded_gps():
             return True
-        if not self._skip_ocr and self._parser._has_ocr_gps():
+        if not self._skip_ocr and self._parser.has_ocr_gps():
             return True
         return False
 
@@ -315,6 +313,14 @@ class GPSParser:
         self._detector = GPSDetector(video_path, self, skip_ocr=skip_ocr)
         self._extractor = GPSTrackExtractor(video_path, self)
 
+    @property
+    def tracks(self) -> list[GPSPoint]:
+        return self._tracks
+
+    @property
+    def extraction_attempted(self) -> bool:
+        return self._extraction_attempted
+
     def close_ocr(self) -> None:
         """釋放 OCR 資源（Tesseract 進程為無狀態，此處僅清理內部參照）"""
         if self._ocr:
@@ -330,7 +336,7 @@ class GPSParser:
             self._has_gps = self._detector.detect()
         return self._has_gps
 
-    def _has_ocr_gps(self) -> bool:
+    def has_ocr_gps(self) -> bool:
         """多幀輕量探測：嘗試影片前段多個取樣點
 
         流程：
@@ -372,11 +378,7 @@ class GPSParser:
                     )
 
             # 步驟 2: 取樣 3 幀測試
-            sample_frames = [0]
-            if total_frames > int(fps * 3):
-                sample_frames.append(int(fps * 3))
-            if total_frames > int(fps * 6):
-                sample_frames.append(int(fps * 6))
+            sample_frames = sample_frame_indices(total_frames, fps)
 
             log.info(f"OCR 偵測：取樣 {len(sample_frames)} 幀 (frames {sample_frames})")
             ocr = GPSOCR()
@@ -567,31 +569,17 @@ class GPSParser:
             return []
 
         try:
-            cmd = [
-                ffprobe_path,
-                "-v",
-                "quiet",
-                "-print_format",
-                "json",
-                "-show_frames",
-                "-select_streams",
-                "d",
-                "-show_data",
+            data_frames = ffprobe_json(
                 self.video_path,
-            ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=15,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                ffprobe_path,
+                extra_args=["-show_frames", "-select_streams", "d", "-show_data"],
             )
-            if result.returncode != 0:
+            if data_frames is None:
                 return []
 
-            frames_data = json.loads(result.stdout.decode("utf-8", errors="replace"))
             tracks = []
 
-            for frame in frames_data.get("frames", []):
+            for frame in data_frames.get("frames", []):
                 raw_hex = frame.get("data", "")
                 if not raw_hex:
                     continue
@@ -897,28 +885,10 @@ class GPSParser:
         if ffprobe_path is None:
             return None
 
-        try:
-            cmd = [
-                ffprobe_path,
-                "-v",
-                "quiet",
-                "-print_format",
-                "json",
-                "-show_format",
-                "-show_streams",
-                self.video_path,
-            ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=10,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            if result.returncode == 0:
-                self._probe_data = json.loads(result.stdout.decode("utf-8", errors="replace"))
-                return self._probe_data
-        except Exception as e:
-            log.warning(f"ffprobe 失敗: {e}")
+        data = ffprobe_json(self.video_path, ffprobe_path)
+        if data is not None:
+            self._probe_data = data
+            return self._probe_data
 
         return None
 

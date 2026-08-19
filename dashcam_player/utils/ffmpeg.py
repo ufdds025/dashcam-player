@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from dashcam_player.utils.log import get_logger
+from dashcam_player.utils.subprocess_utils import run_no_window as _run_no_window
 
 log = get_logger()
 
@@ -55,16 +56,67 @@ def _bundle_dir() -> str | None:
     return None
 
 
+_FFMPEG_CACHE: tuple[str | None, str | None] | None = None
+
+
 def find_ffmpeg() -> tuple[str | None, str | None]:
+    global _FFMPEG_CACHE
+    if _FFMPEG_CACHE is not None:
+        return _FFMPEG_CACHE
     bundle = _bundle_dir()
     if bundle:
         ffmpeg = os.path.join(bundle, "ffmpeg.exe")
         ffprobe = os.path.join(bundle, "ffprobe.exe")
         if os.path.isfile(ffmpeg) and os.path.isfile(ffprobe):
-            return ffmpeg, ffprobe
+            _FFMPEG_CACHE = (ffmpeg, ffprobe)
+            return _FFMPEG_CACHE
     path = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
     probe_path = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
-    return path, probe_path
+    _FFMPEG_CACHE = (path, probe_path)
+    return _FFMPEG_CACHE
+
+
+def _clear_ffmpeg_cache() -> None:
+    """清除 find_ffmpeg 快取（僅供測試使用）。"""
+    global _FFMPEG_CACHE
+    _FFMPEG_CACHE = None
+
+
+def ffprobe_json(
+    video_path: str,
+    ffprobe_path: str | None = None,
+    extra_args: list[str] | None = None,
+) -> dict | None:
+    """呼叫 ffprobe 回傳 raw JSON dict（底層工具，不解析結果）。
+
+    預設使用 ``-show_format -show_streams``；若需不同參數（例如
+    ``-show_frames -select_streams d``），透過 ``extra_args`` 覆寫。
+    """
+    if ffprobe_path is None:
+        _, ffprobe_path = find_ffmpeg()
+    if ffprobe_path is None:
+        return None
+
+    cmd: list[str] = [
+        ffprobe_path,
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    else:
+        cmd.extend(["-show_format", "-show_streams"])
+    cmd.append(video_path)
+
+    try:
+        result = _run_no_window(cmd, timeout=10)
+        if result.returncode != 0:
+            return None
+        return json.loads(result.stdout.decode("utf-8", errors="replace"))
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        return None
 
 
 def probe_media_info(video_path: str, ffprobe_path: str | None = None) -> dict | None:
@@ -73,27 +125,8 @@ def probe_media_info(video_path: str, ffprobe_path: str | None = None) -> dict |
     if ffprobe_path is None:
         return None
 
-    cmd = [
-        ffprobe_path,
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-        "-show_format",
-        "-show_streams",
-        video_path,
-    ]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout.decode("utf-8", errors="replace"))
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+    data = ffprobe_json(video_path, ffprobe_path)
+    if data is None:
         return None
 
     info: dict = {
@@ -214,12 +247,7 @@ def get_keyframe_positions(video_path: str, ffprobe_path: str | None = None) -> 
         video_path,
     ]
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=30,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        result = _run_no_window(cmd, timeout=30)
         if result.returncode != 0:
             return None
         times: list[float] = []

@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import tempfile
 
 import cv2
 import numpy as np
 
-from dashcam_player.utils.cv_utils import open_video_capture
+from dashcam_player.utils.cv_utils import open_video_capture, preprocess_clahe_otsu
 from dashcam_player.utils.log import get_logger
+from dashcam_player.utils.subprocess_utils import run_no_window as _run_no_window
 
 log = get_logger()
 
@@ -60,11 +60,11 @@ def _run_tesseract(
             return None
 
         cmd = ["tesseract", tmp_path, "stdout"] + config.split()
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=10,
-        )
+        try:
+            result = _run_no_window(cmd, timeout=10)
+        except FileNotFoundError:
+            log.error("Tesseract 未安裝或不在 PATH 中")
+            return None
 
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
@@ -145,8 +145,7 @@ class GPSOCR:
           2. Otsu 二值化
           3. Otsu 放大 2x/3x（對小字元有效）
         """
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
+        enhanced, binary = preprocess_clahe_otsu(gray)
 
         # 策略 1: 灰階直送
         text = _run_tesseract(enhanced, config="--psm 6")
@@ -156,9 +155,6 @@ class GPSOCR:
                 return coord
 
         # 策略 2: Otsu 二值化
-        _, binary = cv2.threshold(
-            enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
         text2 = _run_tesseract(binary, config="--psm 6")
         if text2:
             coord = self._parse_gps_text(text2)

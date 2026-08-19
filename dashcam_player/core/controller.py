@@ -68,11 +68,11 @@ class Controller(QObject):
         self._settings = self._app_settings.load_capture_settings()
 
         # Workers
-        self.worker = VideoWorker(hw_backends=self._hw_backends)
+        self._worker = VideoWorker(hw_backends=self._hw_backends)
 
         # Managers
-        self._playback = PlaybackManager(self.worker, parent=self)
-        self._capture = CaptureManager(self.worker, self._hw_backends, parent=self)
+        self._playback = PlaybackManager(self._worker, parent=self)
+        self._capture = CaptureManager(self._worker, self._hw_backends, parent=self)
         self._export = ExportManager(parent=self)
         self._gps = GPSFacade(parent=self)
         self._gps.set_app_settings(self._app_settings)
@@ -84,8 +84,8 @@ class Controller(QObject):
 
     def _connect_manager_signals(self) -> None:
         # Worker → Controller relay (load_failed 直接轉發)
-        self.worker.load_failed.connect(self.load_failed)
-        self.worker.error_occurred.connect(self.error_occurred)
+        self._worker.load_failed.connect(self.load_failed)
+        self._worker.error_occurred.connect(self.error_occurred)
 
         # PlaybackManager → Controller relay
         self._playback.frame_ready.connect(self._on_frame_ready)
@@ -142,13 +142,13 @@ class Controller(QObject):
         self._capture.stop_batch()
         self._gps.close_gps_manager()
 
-        if self.worker.isRunning():
-            self.worker.close()
-            self.worker.wait(3000)
-            if self.worker.isRunning():
+        if self._worker.isRunning():
+            self._worker.close()
+            self._worker.wait(3000)
+            if self._worker.isRunning():
                 log.warning("VideoWorker not stopped within 3s, terminating")
-                self.worker.terminate()
-                self.worker.wait(1000)
+                self._worker.terminate()
+                self._worker.wait(1000)
 
         self._video_path = path
         self.video_info = None
@@ -159,12 +159,12 @@ class Controller(QObject):
         self._capture_end_frame = -1
         self._playback.reset_gps_throttle()
 
-        self.worker.open(path)
+        self._worker.open(path)
 
-        self.gps_manager = GPSManager(
+        self._gps_manager = GPSManager(
             path, skip_ocr=True, app_settings=self._app_settings, parent=self,
         )
-        self.gps_manager.start_background_load()
+        self._gps_manager.start_background_load()
 
     # ==================================================================
     # 唯讀 properties（delegation）
@@ -237,11 +237,11 @@ class Controller(QObject):
         return self._gps.get_track_count()
 
     @property
-    def gps_manager(self) -> GPSManager | None:
+    def _gps_manager(self) -> GPSManager | None:
         return self._gps.manager
 
-    @gps_manager.setter
-    def gps_manager(self, mgr: GPSManager | None) -> None:
+    @_gps_manager.setter
+    def _gps_manager(self, mgr: GPSManager | None) -> None:
         self._gps.set_gps_manager(mgr)
         self._capture.set_gps_manager(mgr)
 
@@ -332,7 +332,7 @@ class Controller(QObject):
             return None
         return self._capture.capture_single(
             frame, out_dir, prefix, img_format, quality, resolution,
-            frame_idx, self.fps, self.gps_manager,
+            frame_idx, self.fps, self._gps_manager,
         )
 
     def start_batch_capture(
@@ -345,7 +345,7 @@ class Controller(QObject):
     ) -> None:
         self._capture.start_batch_capture(
             start_frame, end_frame, capture_fps, settings,
-            original_fps, self.gps_manager,
+            original_fps, self._gps_manager,
         )
 
     # ==================================================================
@@ -360,7 +360,11 @@ class Controller(QObject):
         preserve_gps: bool = True,
     ) -> None:
         self._export.set_video_context(self._video_path, self.video_info)
-        self._export.start_video_export(start_sec, end_sec, settings, preserve_gps)
+        corrected = self._export.start_video_export(
+            start_sec, end_sec, settings, preserve_gps
+        )
+        if corrected is not None:
+            self._capture_settings = corrected
 
     def stop_export(self) -> None:
         self._export.stop_export()
@@ -386,8 +390,8 @@ class Controller(QObject):
 
     def start_gps_ocr_detection(self) -> None:
         """手動觸發 OCR GPS 偵測（使用者開啟「顯示 GPS 軌跡」時呼叫）"""
-        if self.gps_manager is not None:
-            self.gps_manager.start_ocr_detection()
+        if self._gps_manager is not None:
+            self._gps_manager.start_ocr_detection()
 
     def export_gpx(self, output_path: str) -> bool:
         return self._gps.export_gpx(output_path)
@@ -407,11 +411,11 @@ class Controller(QObject):
     # ==================================================================
 
     def shutdown(self) -> None:
-        self.worker.close()
-        if not self.worker.wait(3000):
+        self._worker.close()
+        if not self._worker.wait(3000):
             log.warning("VideoWorker 未在 3 秒內停止，強制終止")
-            self.worker.terminate()
-            self.worker.wait(1000)
+            self._worker.terminate()
+            self._worker.wait(1000)
         self._capture.stop_batch()
         self._export.cancel_export()
         self._gps.close_gps_manager()

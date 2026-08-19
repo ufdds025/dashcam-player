@@ -146,11 +146,13 @@ def imwrite_safe(path: str, frame: np.ndarray, params: list[int] | None = None) 
     try:
         success, buf = cv2.imencode(ext, frame, params or [])
         if not success:
+            log.warning(f"imencode 失敗: {path}")
             return False
         with open(path, "wb") as f:
             f.write(buf.tobytes())
         return True
-    except Exception:
+    except Exception as e:
+        log.warning(f"寫入圖片失敗 {path}: {e}")
         return False
 
 
@@ -161,6 +163,27 @@ def frame_to_qimage(frame_bgr: np.ndarray) -> QImage | None:
     from PyQt5.QtGui import QImage
 
     return QImage(frame_bgr.data, w, h, w * 3, QImage.Format_BGR888).copy()
+
+
+def preprocess_clahe_otsu(gray: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """CLAHE 增強 + Otsu 二值化（GPS OCR / ROI 偵測共用前處理）。
+
+    回傳 ``(enhanced, binary)``：enhanced 為 CLAHE 灰階，binary 為 Otsu 二值化結果。
+    """
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return enhanced, binary
+
+
+def sample_frame_indices(total_frames: int, fps: float) -> list[int]:
+    """回傳 0s / 3s / 6s 對應的幀索引列表（GPS 偵測取樣共用）。"""
+    indices = [0]
+    if total_frames > int(fps * 3):
+        indices.append(int(fps * 3))
+    if total_frames > int(fps * 6):
+        indices.append(int(fps * 6))
+    return indices
 
 
 def overlay_gps_text(frame: np.ndarray, gps_coord: tuple) -> np.ndarray:
@@ -232,6 +255,6 @@ def write_exif_gps(image_path: str, gps_coord: tuple) -> None:
         exif_bytes = piexif.dump(exif_dict)
         piexif.insert(exif_bytes, image_path)
     except ImportError:
-        pass
+        log.debug("piexif 未安裝，跳過 EXIF GPS 寫入")
     except Exception as e:
         get_logger().warning(f"寫入 EXIF GPS 失敗: {e}")

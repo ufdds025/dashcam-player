@@ -15,7 +15,11 @@ import cv2
 import numpy as np
 
 from dashcam_player.models.gps_roi import GPSROIDetectionResult
-from dashcam_player.utils.cv_utils import open_video_capture
+from dashcam_player.utils.cv_utils import (
+    open_video_capture,
+    preprocess_clahe_otsu,
+    sample_frame_indices,
+)
 from dashcam_player.utils.log import get_logger
 
 log = get_logger()
@@ -136,11 +140,7 @@ class GPSROIDetector:
         if frame_w <= 0 or frame_h <= 0:
             return None
 
-        sample_indices = [0]
-        if total_frames > int(fps * 3):
-            sample_indices.append(int(fps * 3))
-        if total_frames > int(fps * 6):
-            sample_indices.append(int(fps * 6))
+        sample_indices = sample_frame_indices(total_frames, fps)
 
         all_gps_bboxes: list[list[list[float]]] = []
         best_frame_idx = 0
@@ -189,12 +189,7 @@ class GPSROIDetector:
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-
-        _, binary = cv2.threshold(
-            enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
+        _, binary = preprocess_clahe_otsu(gray)
 
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         dilated = cv2.dilate(binary, kernel, iterations=2)

@@ -188,7 +188,7 @@ class TestSignalRelayChain:
         import numpy as np
 
         frame = np.zeros((10, 10, 3), dtype=np.uint8)
-        ctrl.worker.frame_ready.emit(frame, 7)
+        ctrl._worker.frame_ready.emit(frame, 7)
 
         assert len(received) == 1
         assert received[0][1] == 7
@@ -203,7 +203,7 @@ class TestSignalRelayChain:
         ctrl.video_loaded.connect(loaded.append)
 
         info = VideoInfo(path="x.mp4", fps=30.0, frame_count=900, duration=30.0)
-        ctrl.worker.video_info_ready.emit(info)
+        ctrl._worker.video_info_ready.emit(info)
 
         assert len(loaded) == 1
         assert ctrl.video_info is info
@@ -216,7 +216,7 @@ class TestSignalRelayChain:
         finished: list = []
         ctrl.play_finished.connect(lambda: finished.append(True))
 
-        ctrl.worker.play_finished.emit()
+        ctrl._worker.play_finished.emit()
 
         assert finished == [True]
 
@@ -239,7 +239,7 @@ class TestSignalRelayChain:
         received: list = []
         ctrl.error_occurred.connect(lambda title, msg: received.append((title, msg)))
 
-        ctrl.worker.error_occurred.emit("跳轉失敗", "無法跳轉至幀 42")
+        ctrl._worker.error_occurred.emit("跳轉失敗", "無法跳轉至幀 42")
 
         assert received == [("跳轉失敗", "無法跳轉至幀 42")]
 
@@ -290,8 +290,8 @@ class TestSignalRelayChain:
 
         mgr1 = GPSManager("a.mp4", skip_ocr=True, parent=ctrl)
         mgr2 = GPSManager("b.mp4", skip_ocr=True, parent=ctrl)
-        ctrl.gps_manager = mgr1
-        ctrl.gps_manager = mgr2
+        ctrl._gps_manager = mgr1
+        ctrl._gps_manager = mgr2
         ctrl._gps.set_video_context("b.mp4", None)
 
         # 只有新 manager 的信號有連接；emit 一次只觸發一次
@@ -303,11 +303,11 @@ class TestSignalRelayChain:
         assert received == []  # 舊 manager 已 disconnect
 
     def test_gps_manager_facade_property(self, qapp):
-        """Controller.gps_manager 不應直接洩漏 GPSFacade 內部屬性。"""
+        """Controller._gps_manager 不應直接洩漏 GPSFacade 內部屬性。"""
         from dashcam_player.core.controller import Controller
 
         ctrl = Controller()
-        assert ctrl.gps_manager is ctrl._gps.manager
+        assert ctrl._gps_manager is ctrl._gps.manager
 
     def test_gps_status_message_forwarded_via_facade(self, qapp):
         """GPSManager.gps_status_message 經 GPSFacade 轉發至 Controller.status_message。"""
@@ -319,7 +319,7 @@ class TestSignalRelayChain:
         ctrl.status_message.connect(lambda m: msgs.append(m))
 
         mgr = GPSManager("a.mp4", skip_ocr=True, parent=ctrl)
-        ctrl.gps_manager = mgr
+        ctrl._gps_manager = mgr
         mgr.gps_status_message.emit("hello")
         assert msgs == ["hello"]
 
@@ -333,7 +333,7 @@ class TestSignalRelayChain:
         ctrl.gps_ready.connect(lambda *a: received.append(a))
 
         mgr = GPSManager("a.mp4", skip_ocr=True, parent=ctrl)
-        ctrl.gps_manager = mgr
+        ctrl._gps_manager = mgr
         ctrl._gps.set_video_context("b.mp4", None)
 
         mgr.gps_loaded.emit("a.mp4", True, 5)

@@ -59,11 +59,15 @@ class ExportManager(QObject):
         end_sec: float,
         settings: CaptureSettings,
         preserve_gps: bool = True,
-    ) -> None:
+    ) -> CaptureSettings:
+        """啟動影片匯出。回傳（可能已修正的）settings 供 Controller 同步。"""
+
+        settings = settings.replace()
+
         ffmpeg_path, _ = find_ffmpeg()
         if ffmpeg_path is None:
             self.export_finished.emit(False, "未找到 ffmpeg")
-            return
+            return settings
 
         media_info = self._ensure_probe_info()
         has_audio = media_info["has_audio"] if media_info else False
@@ -85,7 +89,7 @@ class ExportManager(QObject):
                     self.status_message.emit(
                         f"輸入編碼 {video_codec} 不支援 {settings.video_format}，輸出已自動切換為 {auto_fmt}"
                     )
-                    settings.video_format = auto_fmt
+                    settings = settings.replace(video_format=auto_fmt)
             fmt = settings.video_format.lower()
 
         out_dir = settings.output_dir or os.path.abspath("captures")
@@ -107,11 +111,13 @@ class ExportManager(QObject):
             preset=settings.video_preset,
             scale_width=settings.video_scale_width,
             preserve_gps=preserve_gps,
+            video_format=fmt,
         )
 
         cmd = build_export_cmd(**self._export_params)
         log.info(f"FFmpeg 指令: {' '.join(cmd)}")
         self._launch_export(cmd)
+        return settings
 
     def _launch_export(self, cmd: list[str]) -> None:
         if self._export_worker and self._export_worker.isRunning():
@@ -130,15 +136,18 @@ class ExportManager(QObject):
 
     def _on_export_finished(self, success: bool, message: str) -> None:
         if not success and self._export_params.get("use_copy", False):
-            self._export_params["use_copy"] = False
             params = dict(self._export_params)
+            params["use_copy"] = False
             old_path = params["out_path"]
             base, _ = os.path.splitext(old_path)
-            new_path = base + ".mp4"
+            codec = params.get("codec", "libx264")
+            retry_fmt = suggest_container(codec, "MP4").lower()
+            new_path = f"{base}.{retry_fmt}"
             params["out_path"] = new_path
             if os.path.isfile(new_path):
                 log.warning(f"retry 目標檔案已存在，將覆蓋 {new_path}")
-            log.info(f"stream copy 失敗，自動改為 libx264 重新編碼至 {new_path}")
+            log.info(f"stream copy 失敗，自動改為 {codec} 重新編碼至 {new_path}")
+            self._export_params = params
             cmd = build_export_cmd(**params)
             self._launch_export(cmd)
             return

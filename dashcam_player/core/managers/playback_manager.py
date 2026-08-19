@@ -32,8 +32,6 @@ class PlaybackManager(QObject):
         self._current_frame: np.ndarray | None = None
         self._playing: bool = False
         self._video_info: VideoInfo | None = None
-        self._capture_start_frame: int = -1
-        self._capture_end_frame: int = -1
         self._gps_throttle_counter: int = 0
         self._gps_throttle_interval: int = 5
         self._gps_manual_seek: bool = False
@@ -78,22 +76,6 @@ class PlaybackManager(QObject):
     @property
     def current_idx(self) -> int:
         return self._current_idx
-
-    @property
-    def capture_start_frame(self) -> int:
-        return self._capture_start_frame
-
-    @capture_start_frame.setter
-    def capture_start_frame(self, val: int) -> None:
-        self._capture_start_frame = val
-
-    @property
-    def capture_end_frame(self) -> int:
-        return self._capture_end_frame
-
-    @capture_end_frame.setter
-    def capture_end_frame(self, val: int) -> None:
-        self._capture_end_frame = val
 
     @property
     def gps_throttle_interval(self) -> int:
