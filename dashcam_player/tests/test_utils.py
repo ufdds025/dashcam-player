@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import os
 import time
+from typing import Any
 
-from dashcam_player.utils.ffmpeg import get_keyframe_positions
+import pytest
+
+from dashcam_player.utils.ffmpeg import (
+    build_export_cmd,
+    detect_input_format,
+    get_keyframe_positions,
+    suggest_container,
+)
+from dashcam_player.utils.gps_ocr import _match_gps_text
 from dashcam_player.utils.time_utils import format_time, parse_time_input
 
 
@@ -16,6 +25,9 @@ class TestFormatTime:
 
     def test_exact_hour(self) -> None:
         assert format_time(7200) == "02:00:00"
+
+    def test_negative_clamps_to_zero(self) -> None:
+        assert format_time(-5) == "00:00:00"
 
 
 class TestParseTimeInput:
@@ -31,6 +43,18 @@ class TestParseTimeInput:
     def test_invalid(self) -> None:
         assert parse_time_input("abc") is None
 
+    def test_fullwidth_colon(self) -> None:
+        """全形冒號 U+FF1A 相容。"""
+        assert parse_time_input("01：30：45") == 5445.0
+        assert parse_time_input("05：30") == 330.0
+
+    def test_fractional_seconds(self) -> None:
+        assert parse_time_input("01:30:45.5") == 5445.5
+
+    def test_out_of_range_fields_accepted_as_math(self) -> None:
+        # 既有行為：不驗證欄位不驗證欄位範圍，純數學換算
+        assert parse_time_input("00:99:99") == pytest.approx(99 * 60 + 99)
+
 
 class TestGetKeyframePositions:
     def test_nonexistent_file_returns_none(self) -> None:
@@ -42,6 +66,195 @@ class TestGetKeyframePositions:
         import dashcam_player.utils.ffmpeg as ffmpeg_mod
         monkeypatch.setattr(ffmpeg_mod, "find_ffmpeg", lambda: (None, None))
         assert get_keyframe_positions("dummy.mp4") is None
+
+
+# ============================================================
+# build_export_cmd
+# ============================================================
+
+_BASE: dict[str, Any] = {
+    "ffmpeg_path": "ffmpeg",
+    "video_path": "in.mp4",
+    "start_sec": 1.0,
+    "end_sec": 4.0,
+    "out_path": "out.mp4",
+}
+
+
+def _arg_after(cmd: list[str], flag: str) -> str | None:
+    if flag not in cmd:
+        return None
+    return cmd[cmd.index(flag) + 1]
+
+
+class TestBuildExportCmd:
+    def test_ss_and_t_durations(self) -> None:
+        cmd = build_export_cmd(**_BASE)
+        assert _arg_after(cmd, "-ss") == "1.000"
+        assert _arg_after(cmd, "-t") == "3.000"
+        assert cmd[-1] == "out.mp4"
+
+    def test_stream_copy_preserve_gps_maps(self) -> None:
+        cmd = build_export_cmd(**_BASE)
+        maps = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
+        assert maps == ["0:v", "0:a?", "0:d?"]
+        assert _arg_after(cmd, "-c:v") == "copy"
+        assert "-crf" not in cmd and "-preset" not in cmd
+
+    def test_stream_copy_no_gps_no_maps(self) -> None:
+        cmd = build_export_cmd(preserve_gps=False, **_BASE)
+        assert "-map" not in cmd
+        assert _arg_after(cmd, "-c:v") == "copy"
+
+    def test_reencode_uses_codec_crf_preset(self) -> None:
+        cmd = build_export_cmd(
+            use_copy=False, codec="libx265", crf=22, preset="fast", **_BASE
+        )
+        assert _arg_after(cmd, "-c:v") == "libx265"
+        assert _arg_after(cmd, "-crf") == "22"
+        assert _arg_after(cmd, "-preset") == "fast"
+        assert "-map" in cmd  # 重編碼也保留 GPS data track
+
+    def test_reencode_scale_numeric(self) -> None:
+        cmd = build_export_cmd(use_copy=False, scale_width="1280", **_BASE)
+        assert _arg_after(cmd, "-vf") == "scale=1280:-2"
+
+    def test_reencode_scale_original_no_vf(self) -> None:
+        cmd = build_export_cmd(use_copy=False, scale_width="原始", **_BASE)
+        assert "-vf" not in cmd
+
+    def test_reencode_invalid_scale_ignored(self) -> None:
+        cmd = build_export_cmd(use_copy=False, scale_width="not_a_number", **_BASE)
+        assert "-vf" not in cmd
+
+    def test_audio_copied_when_present_and_kept(self) -> None:
+        cmd = build_export_cmd(has_audio=True, keep_audio=True, **_BASE)
+        assert _arg_after(cmd, "-c:a") == "copy"
+
+    def test_audio_dropped_when_disabled(self) -> None:
+        cmd = build_export_cmd(has_audio=True, keep_audio=False, **_BASE)
+        assert "-an" in cmd
+
+    def test_audio_dropped_when_absent(self) -> None:
+        cmd = build_export_cmd(has_audio=False, keep_audio=True, **_BASE)
+        assert "-an" in cmd
+
+
+class TestSuggestContainer:
+    @pytest.mark.parametrize("codec", ["h264", "avc1", "hevc", "h265", "mpeg4"])
+    def test_mp4_safe_codecs_stay_mp4(self, codec: str) -> None:
+        assert suggest_container(codec, "MP4") == "MP4"
+
+    @pytest.mark.parametrize("codec", ["ffv1", "prores", "unknown_codec"])
+    def test_unsafe_codecs_become_mkv(self, codec: str) -> None:
+        assert suggest_container(codec, "MP4") == "MKV"
+
+    def test_case_insensitive_codec(self) -> None:
+        assert suggest_container("H264", "MP4") == "MP4"
+
+    def test_mkv_preferred_passthrough(self) -> None:
+        assert suggest_container("ffv1", "MKV") == "MKV"
+
+
+class TestDetectInputFormat:
+    def test_known_extension_wins(self) -> None:
+        assert detect_input_format("clip.mkv", "mov") == "mkv"
+
+    def test_known_extension_case_insensitive(self) -> None:
+        assert detect_input_format("CLIP.MP4") == "mp4"
+
+    def test_falls_back_to_format_name(self) -> None:
+        assert detect_input_format("clip.xyz", "mov,mp4,m4a") == "mov"
+
+    def test_matroska_mapping(self) -> None:
+        assert detect_input_format("clip.bin", "matroska,webm") == "mkv"
+
+    def test_unknown_everything_defaults_mp4(self) -> None:
+        assert detect_input_format("clip.bin", "") == "mp4"
+
+
+class TestFindFfmpegCache:
+    def setup_method(self) -> None:
+        import dashcam_player.utils.ffmpeg as fm
+        fm._clear_ffmpeg_cache()
+
+    def teardown_method(self) -> None:
+        import dashcam_player.utils.ffmpeg as fm
+        fm._clear_ffmpeg_cache()
+
+    def test_positive_result_cached(self, monkeypatch) -> None:
+        import dashcam_player.utils.ffmpeg as fm
+
+        calls = {"n": 0}
+
+        def fake_which(name: str):
+            calls["n"] += 1
+            return f"C:/fake/{name}"
+
+        monkeypatch.setattr(fm.shutil, "which", fake_which)
+        r1 = fm.find_ffmpeg()
+        r2 = fm.find_ffmpeg()
+        assert r1 == ("C:/fake/ffmpeg", "C:/fake/ffprobe")
+        assert r2 == r1
+        assert calls["n"] == 2  # 第二次直接命中快取
+
+    def test_negative_result_not_cached(self, monkeypatch) -> None:
+        """A10：找不到時不可快取，使用者中途安裝 FFmpeg 後無須重啟。"""
+        import dashcam_player.utils.ffmpeg as fm
+
+        calls = {"n": 0}
+
+        def fake_which(name: str):
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(fm.shutil, "which", fake_which)
+        assert fm.find_ffmpeg() == (None, None)
+        assert fm.find_ffmpeg() == (None, None)
+        # 每次 find_ffmpeg 對 ffmpeg/ffprobe 各試 2 個名稱 = 4 次 which；
+        # 兩次呼叫共 8 次代表第二輪確實重新探測（負結果未快取）
+        assert calls["n"] == 8
+
+
+# ============================================================
+# gps_ocr._match_gps_text（A11 純函式）
+# ============================================================
+
+
+class TestMatchGpsText:
+    @pytest.mark.parametrize(
+        "text,lat,lon",
+        [
+            ("24.338535N 120.455958E 5Km/h", 24.338535, 120.455958),
+            ("24.338535N, 120.455958E", 24.338535, 120.455958),
+            ("24.338535 N 120.455958 E", 24.338535, 120.455958),
+            ("N24.338535 E120.455958", 24.338535, 120.455958),  # 前綴格式
+            ("S24.338535 W120.455958", -24.338535, -120.455958),
+            ("GPS: 12.50S , 70.25W speed", -12.5, -70.25),
+        ],
+    )
+    def test_valid_formats(self, text: str, lat: float, lon: float) -> None:
+        result = _match_gps_text(text)
+        assert result is not None
+        assert result[0] == pytest.approx(lat)
+        assert result[1] == pytest.approx(lon)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "no coordinates here",
+            "24.338535 120.455958",  # 缺半球字母
+        ],
+    )
+    def test_invalid_returns_none(self, text: str) -> None:
+        assert _match_gps_text(text) is None
+
+    def test_latitude_out_of_range_rejected(self) -> None:
+        assert _match_gps_text("91.5N 120.4E") is None
+
+    def test_longitude_out_of_range_rejected(self) -> None:
+        assert _match_gps_text("24.3N 181.2E") is None
 
 
 class TestOsmCacheCleanup:

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 
+from dashcam_player.models.capture_settings import SCALE_ORIGINAL
 from dashcam_player.utils.log import get_logger
 from dashcam_player.utils.subprocess_utils import run_no_window as _run_no_window
 
@@ -60,6 +61,8 @@ _FFMPEG_CACHE: tuple[str | None, str | None] | None = None
 
 
 def find_ffmpeg() -> tuple[str | None, str | None]:
+    """尋找 ffmpeg/ffprobe。僅快取正向結果——負結果每次重探，
+    讓使用者中途安裝 FFmpeg 後無須重啟即可被找到（shutil.which 成本可忽略）。"""
     global _FFMPEG_CACHE
     if _FFMPEG_CACHE is not None:
         return _FFMPEG_CACHE
@@ -72,8 +75,9 @@ def find_ffmpeg() -> tuple[str | None, str | None]:
             return _FFMPEG_CACHE
     path = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
     probe_path = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
-    _FFMPEG_CACHE = (path, probe_path)
-    return _FFMPEG_CACHE
+    if path and probe_path:
+        _FFMPEG_CACHE = (path, probe_path)
+    return path, probe_path
 
 
 def _clear_ffmpeg_cache() -> None:
@@ -278,7 +282,7 @@ def build_export_cmd(
     codec: str = "libx264",
     crf: int = 18,
     preset: str = "medium",
-    scale_width: str = "原始",
+    scale_width: str = SCALE_ORIGINAL,
     preserve_gps: bool = True,
 ) -> list[str]:
     """build FFmpeg export command.
@@ -303,7 +307,7 @@ def build_export_cmd(
         if preserve_gps:
             cmd += ["-map", "0:v", "-map", "0:a?", "-map", "0:d?"]
         cmd += ["-c:v", codec, "-crf", str(crf), "-preset", preset]
-        if scale_width != "原始":
+        if scale_width != SCALE_ORIGINAL:
             try:
                 w = int(scale_width)
                 cmd += ["-vf", f"scale={w}:-2"]

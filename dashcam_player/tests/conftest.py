@@ -4,8 +4,32 @@ import queue
 
 import numpy as np
 import pytest
+from PyQt5.QtCore import QSettings
 
 from dashcam_player.core.video_worker import VideoWorker
+
+
+@pytest.fixture(autouse=True)
+def isolated_qsettings(tmp_path, monkeypatch):
+    """將 AppSettings 的 QSettings 導離真實登錄檔，隔離每個測試的設定環境。
+
+    ⚠️ QSettings(org, app) 兩參建構子在 Windows 永遠使用 NativeFormat（登錄檔），
+    setDefaultFormat()/setPath() 對該建構子無效。因此以子類強制 IniFormat
+    並替換 config.settings 模組內的 QSettings 名稱，INI 檔落在測試暫存目錄。
+    """
+    from dashcam_player.config import settings as settings_mod
+
+    ini_root = tmp_path / "qsettings"
+    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(ini_root))
+
+    class _TestQSettings(QSettings):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(
+                QSettings.IniFormat, QSettings.UserScope, *args, **kwargs
+            )
+
+    monkeypatch.setattr(settings_mod, "QSettings", _TestQSettings)
+    yield
 
 
 @pytest.fixture

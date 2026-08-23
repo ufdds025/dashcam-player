@@ -11,20 +11,12 @@ from typing import TYPE_CHECKING
 from PyQt5.QtCore import QObject, pyqtSignal
 
 if TYPE_CHECKING:
-    import numpy as np
 
     from dashcam_player.config.settings import AppSettings
     from dashcam_player.core.gps_manager import GPSManager
     from dashcam_player.models.video_info import VideoInfo
 
-from dashcam_player.utils.cv_utils import (
-    overlay_gps_text as _overlay_gps_text_shared,
-)
-from dashcam_player.utils.cv_utils import (
-    overlay_osm_thumbnail,
-)
 from dashcam_player.utils.log import get_logger
-from dashcam_player.utils.osm_map import get_static_map
 
 log = get_logger()
 
@@ -156,14 +148,6 @@ class GPSFacade(QObject):
             return None
         seconds = frame_idx / fps
         return self._gps_manager.get_position_at_time(seconds)
-
-    def overlay_gps_text(self, frame: np.ndarray, gps_coord: tuple) -> np.ndarray:
-        lat, lon = gps_coord
-        frame = _overlay_gps_text_shared(frame, gps_coord)
-        osm_bytes = get_static_map(lat, lon, zoom=15, width=160, height=160)
-        if osm_bytes:
-            frame = overlay_osm_thumbnail(frame, osm_bytes)
-        return frame
 
     # ---- GPS data access ----
 

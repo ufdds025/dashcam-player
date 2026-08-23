@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from dashcam_player.utils.gps_parser import GPSParser, GPSPoint
 
 # ------------------------------------------------------------------
@@ -427,3 +429,58 @@ def test_filter_gps_drift_disabled_threshold() -> None:
 def test_filter_gps_drift_short_track() -> None:
     assert len(filter_gps_drift(_pts([(1.0, 1.0, 0.0)]), 100.0)) == 1
     assert len(filter_gps_drift(_pts([(1.0, 1.0, 0.0), (1.1, 1.1, 1.0)]), 100.0)) == 2
+
+
+# ------------------------------------------------------------------
+# GPX _parse_gpx（A5 不變式：回傳 tracks 必已相對化，否則空列表）
+# ------------------------------------------------------------------
+
+
+def _write_gpx(tmp_path, body: str) -> str:
+    p = tmp_path / "track.gpx"
+    p.write_text(body, encoding="utf-8")
+    return str(p)
+
+
+def test_parse_gpx_valid_returns_relative_times(tmp_path) -> None:
+    gpx = _write_gpx(
+        tmp_path,
+        '<?xml version="1.0"?>\n'
+        '<gpx version="1.1"><trk><trkseg>'
+        '<trkpt lat="24.1" lon="120.5"><time>2024-01-01T00:00:00Z</time></trkpt>'
+        '<trkpt lat="24.2" lon="120.6"><time>2024-01-01T00:00:10Z</time></trkpt>'
+        "</trkseg></trk></gpx>",
+    )
+    tracks, time_base = GPSParser._parse_gpx(gpx)
+    assert len(tracks) == 2
+    assert tracks[0].time == pytest.approx(0.0)
+    assert tracks[1].time == pytest.approx(10.0)
+    assert time_base is not None and time_base > 1_000_000_000  # epoch 秒
+
+
+def test_parse_gpx_malformed_midfile_returns_empty(tmp_path) -> None:
+    """A5 迴歸：中段損壞時不可外流帶絕對 epoch 時間的部分解析結果。"""
+    gpx = _write_gpx(
+        tmp_path,
+        '<?xml version="1.0"?><gpx version="1.1"><trk><trkseg>'
+        '<trkpt lat="24.1" lon="120.5"><time>2024-01-01T00:00:00Z</time></trkpt>'
+        '<trkpt lat="BAD_LAT" lon="120.6"><time>2024-01-01T00:00:10Z</time></trkpt>'
+        "</trkseg></trk></gpx>",
+    )
+    tracks, time_base = GPSParser._parse_gpx(gpx)
+    assert tracks == []
+    assert time_base is None
+
+
+def test_parse_gpx_missing_time_points_skipped(tmp_path) -> None:
+    """無 <time> 的 trkpt 跳過（AGENTS.md 既有規則）。"""
+    gpx = _write_gpx(
+        tmp_path,
+        '<?xml version="1.0"?><gpx version="1.1"><trk><trkseg>'
+        '<trkpt lat="24.1" lon="120.5"></trkpt>'
+        '<trkpt lat="24.2" lon="120.6"><time>2024-01-01T00:00:05Z</time></trkpt>'
+        "</trkseg></trk></gpx>",
+    )
+    tracks, time_base = GPSParser._parse_gpx(gpx)
+    assert len(tracks) == 1
+    assert tracks[0].time == pytest.approx(0.0)

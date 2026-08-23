@@ -13,7 +13,8 @@ log = get_logger()
 class ExportWorker(QThread):
     """背景執行 FFmpeg 指令的執行緒"""
 
-    finished = pyqtSignal(bool, str)  # (success, message)
+    # ⚠️ 不可命名為 finished——會遮蔽 QThread 內建信號，執行緒崩潰時完全靜默
+    result_ready = pyqtSignal(bool, str)  # (success, message)
 
     TIMEOUT_SEC: float = 3600.0  # 1 小時上限，避免 FFmpeg 卡死時執行緒永久阻塞
 
@@ -39,19 +40,19 @@ class ExportWorker(QThread):
                     self._proc.communicate()
                 except Exception:
                     pass
-                self.finished.emit(False, "FFmpeg 執行逾時（超過 1 小時）")
+                self.result_ready.emit(False, "FFmpeg 執行逾時（超過 1 小時）")
                 return
             if self._proc.returncode == 0:
-                self.finished.emit(True, "擷取完成")
+                self.result_ready.emit(True, "擷取完成")
             else:
                 try:
                     enc = locale.getpreferredencoding(do_setlocale=False)
                     msg = stderr.decode(enc, errors="replace").strip()
                 except (LookupError, UnicodeDecodeError):
                     msg = stderr.decode("utf-8", errors="replace").strip()
-                self.finished.emit(False, f"FFmpeg 錯誤:\n{msg[-500:]}")
+                self.result_ready.emit(False, f"FFmpeg 錯誤:\n{msg[-500:]}")
         except OSError as e:
-            self.finished.emit(False, f"無法執行 FFmpeg:\n{e}")
+            self.result_ready.emit(False, f"無法執行 FFmpeg:\n{e}")
         finally:
             self._proc = None
 

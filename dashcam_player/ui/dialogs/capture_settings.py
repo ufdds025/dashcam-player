@@ -2,17 +2,22 @@ from __future__ import annotations
 
 from PyQt5.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QGridLayout,
     QLabel,
     QLineEdit,
-    QSpinBox,
     QWidget,
 )
 
 from dashcam_player.models.capture_settings import CaptureSettings
+from dashcam_player.ui.widgets.encoder_fields import (
+    make_codec_combo,
+    make_crf_spin,
+    make_format_combo,
+    make_preset_combo,
+    make_scale_combo,
+)
 
 
 class CaptureSettingsDialog(QDialog):
@@ -34,8 +39,7 @@ class CaptureSettingsDialog(QDialog):
 
         row = 0
         layout.addWidget(QLabel("輸出格式:"), row, 0)
-        self.vid_format_combo = QComboBox()
-        self.vid_format_combo.addItems(["MP4", "MKV"])
+        self.vid_format_combo = make_format_combo()
         self.vid_format_combo.setCurrentIndex(
             0 if settings.video_format == "MP4" else 1,
         )
@@ -62,12 +66,10 @@ class CaptureSettingsDialog(QDialog):
         lbl = QLabel("編碼格式:")
         layout.addWidget(lbl, row, 0)
         self._enc_widgets.append(lbl)
-        self.vid_codec_combo = QComboBox()
-        self.vid_codec_combo.addItems(["libx264", "libx265"])
+        self.vid_codec_combo = make_codec_combo()
         self.vid_codec_combo.setCurrentIndex(
             0 if settings.video_codec == "libx264" else 1,
         )
-        self.vid_codec_combo.setToolTip("libx264=廣泛相容, libx265=壓縮率更高但較慢")
         layout.addWidget(self.vid_codec_combo, row, 1)
         self._enc_widgets.append(self.vid_codec_combo)
 
@@ -75,13 +77,8 @@ class CaptureSettingsDialog(QDialog):
         lbl = QLabel("CRF 品質:")
         layout.addWidget(lbl, row, 0)
         self._enc_widgets.append(lbl)
-        self.vid_crf_spin = QSpinBox()
-        self.vid_crf_spin.setRange(0, 51)
+        self.vid_crf_spin = make_crf_spin()
         self.vid_crf_spin.setValue(settings.video_crf)
-        self.vid_crf_spin.setToolTip(
-            "0=無損, 18=視覺無損(預設), 23=好畫質, 28=可接受\n"
-            "libx264 建議 18-23, libx265 建議 22-28"
-        )
         layout.addWidget(self.vid_crf_spin, row, 1)
         self._enc_widgets.append(self.vid_crf_spin)
 
@@ -89,23 +86,9 @@ class CaptureSettingsDialog(QDialog):
         lbl = QLabel("編碼預設:")
         layout.addWidget(lbl, row, 0)
         self._enc_widgets.append(lbl)
-        self.vid_preset_combo = QComboBox()
-        self.vid_preset_combo.addItems(
-            [
-                "ultrafast",
-                "superfast",
-                "veryfast",
-                "faster",
-                "fast",
-                "medium",
-                "slow",
-                "slower",
-                "veryslow",
-            ]
-        )
+        self.vid_preset_combo = make_preset_combo()
         idx = max(0, self.vid_preset_combo.findText(settings.video_preset))
         self.vid_preset_combo.setCurrentIndex(idx)
-        self.vid_preset_combo.setToolTip("越快→檔案越大, 越慢→檔案越小")
         layout.addWidget(self.vid_preset_combo, row, 1)
         self._enc_widgets.append(self.vid_preset_combo)
 
@@ -113,13 +96,9 @@ class CaptureSettingsDialog(QDialog):
         lbl = QLabel("縮放寬度:")
         layout.addWidget(lbl, row, 0)
         self._enc_widgets.append(lbl)
-        self.vid_scale_combo = QComboBox()
-        self.vid_scale_combo.addItems(["原始", "1920", "1280", "854", "640"])
+        self.vid_scale_combo = make_scale_combo()
         idx = max(0, self.vid_scale_combo.findText(settings.video_scale_width))
         self.vid_scale_combo.setCurrentIndex(idx)
-        self.vid_scale_combo.setToolTip(
-            "以寬度為基準等比例縮小（高度自動計算），維持原始比例不變形",
-        )
         layout.addWidget(self.vid_scale_combo, row, 1)
         self._enc_widgets.append(self.vid_scale_combo)
 

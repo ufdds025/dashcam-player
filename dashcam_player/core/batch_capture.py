@@ -31,7 +31,7 @@ class BatchCaptureWorker(QThread):
     """批次截圖 worker，支援清晰度選取 + GPS 疊加"""
 
     progress = pyqtSignal(int, int)
-    finished = pyqtSignal(int, int)
+    result_ready = pyqtSignal(int, int)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -82,10 +82,17 @@ class BatchCaptureWorker(QThread):
 
     def run(self) -> None:
         if self._start_frame < 0 or self._end_frame <= self._start_frame:
-            self.finished.emit(0, 0)
+            self.result_ready.emit(0, 0)
             return
 
-        os.makedirs(self._output_dir, exist_ok=True)
+        try:
+            os.makedirs(self._output_dir, exist_ok=True)
+        except OSError as e:
+            # 失敗必須 emit，否則 UI 進度條永久卡住
+            err = f"無法建立輸出資料夾: {self._output_dir} ({e})"
+            log.error(err)
+            self.failed.emit(err)
+            return
         is_jpeg = self._img_format == "JPEG"
         ext = "jpg" if is_jpeg else "png"
 
@@ -188,9 +195,9 @@ class BatchCaptureWorker(QThread):
                     self.progress.emit(processed, total_groups)
                     throttle.start()
 
-            # 確保進度條到達 100%
+            # 提前結束（使用者停止）時如實回報進度，不偽造 100%
             if processed < total_groups:
-                self.progress.emit(total_groups, total_groups)
-            self.finished.emit(self._success_count, total_groups)
+                self.progress.emit(processed, total_groups)
+            self.result_ready.emit(self._success_count, total_groups)
         finally:
             cap.release()

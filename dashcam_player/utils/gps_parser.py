@@ -347,6 +347,7 @@ class GPSParser:
           5. 自動偵測失敗 → 記錄 _roi_auto_failed，供 UI 觸發手動設定
         """
         log.info("正在啟動文字辨識引擎 (Tesseract)...")
+        caps: list = []
         try:
             import os
 
@@ -356,6 +357,7 @@ class GPSParser:
             if not cap.isOpened():
                 log.warning("OCR 偵測：無法開啟影片")
                 return False
+            caps.append(cap)
 
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -406,10 +408,7 @@ class GPSParser:
                 if coord is not None:
                     log.info(f"OCR 偵測到 GPS (frame {idx}): {coord[0]}, {coord[1]}")
                     self._ocr = ocr
-                    cap.release()
                     return True
-
-            cap.release()
 
             # 步驟 3: 無已知 ROI 且取樣失敗 → 嘗試自動偵測
             if roi_setting is None and w > 0 and h > 0:
@@ -438,6 +437,7 @@ class GPSParser:
                     ocr2 = GPSOCR()
                     cap2 = open_video_capture(self.video_path)
                     if cap2.isOpened():
+                        caps.append(cap2)
                         roi = result.detected_roi
                         for idx in sample_frames:
                             cap2.set(cv2.CAP_PROP_POS_FRAMES, idx)
@@ -449,9 +449,7 @@ class GPSParser:
                                         f"ROI 偵測後 OCR 成功 (frame {idx}): {coord2[0]}, {coord2[1]}"
                                     )
                                     self._ocr = ocr2
-                                    cap2.release()
                                     return True
-                        cap2.release()
 
             # 步驟 4: 全部失敗
             if w > 0 and h > 0:
@@ -459,6 +457,13 @@ class GPSParser:
             log.info("OCR 偵測：所有方法皆未辨識到 GPS 座標")
         except Exception as e:
             log.warning(f"OCR 偵測失敗: {e}")
+        finally:
+            # cv2 例外中途不再洩漏解碼器（舊版僅正常路徑 release）
+            for c in caps:
+                try:
+                    c.release()
+                except Exception:
+                    pass
         return False
 
     # ------------------------------------------------------------------
@@ -721,9 +726,12 @@ class GPSParser:
                 return tracks, time_base
 
         except Exception as e:
+            # 不變式：回傳的 tracks 必已相對化。部分解析的點帶絕對 epoch 時間，
+            # 外流會被當相對秒數污染插值；回空列表讓呼叫端繼續走 fallback chain
             log.error(f"解析 GPX 失敗: {e}")
+            return [], None
 
-        return tracks, None
+        return [], None
 
     @staticmethod
     def _parse_nmea(nmea_path: str) -> list[GPSPoint]:
@@ -854,23 +862,6 @@ class GPSParser:
         if not self._tracks:
             return None
         return interpolate_gps(seconds, self._tracks)
-
-    def get_gps_bounds(self) -> tuple[float, float, float, float] | None:
-        """取得 GPS 軌跡的邊界框
-
-        Returns:
-            (min_lat, min_lon, max_lat, max_lon) 或 None
-        """
-        if not self.has_gps_data():
-            return None
-
-        tracks = self.extract_gps_tracks()
-        if not tracks:
-            return None
-
-        lats = [p.lat for p in tracks]
-        lons = [p.lon for p in tracks]
-        return (min(lats), min(lons), max(lats), max(lons))
 
     # ------------------------------------------------------------------
     # 工具

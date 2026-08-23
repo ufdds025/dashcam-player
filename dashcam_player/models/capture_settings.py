@@ -5,6 +5,13 @@ from typing import Any
 
 from dashcam_player.models.resolution import Resolution
 
+# 預設輸出資料夾名稱（相對路徑會以 os.path.abspath 解析為 CWD 下 captures/）
+DEFAULT_OUTPUT_DIR = "captures"
+
+# 「不縮放」sentinel：UI 下拉選單第一項同時是 FFmpeg build_export_cmd 的判斷依據。
+# ⚠️ 必須與 Resolution.ORIGINAL.value 一致；改動會讓匯出縮放靜默失效。
+SCALE_ORIGINAL = "原始"
+
 
 @dataclass
 class ScreenshotSettings:
@@ -15,7 +22,7 @@ class ScreenshotSettings:
     img_format: str = "JPEG"
     jpeg_quality: int = 95
     resolution: Resolution = Resolution.ORIGINAL
-    output_dir: str = "captures"
+    output_dir: str = DEFAULT_OUTPUT_DIR
 
 
 @dataclass
@@ -28,7 +35,7 @@ class ExportSettings:
     video_codec: str = "libx264"
     video_crf: int = 18
     video_preset: str = "medium"
-    video_scale_width: str = "原始"
+    video_scale_width: str = SCALE_ORIGINAL
 
 
 @dataclass

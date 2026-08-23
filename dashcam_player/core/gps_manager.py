@@ -17,7 +17,8 @@ class _GPSLoadThread(QThread):
     """內部 GPS 背景載入執行緒，封裝於 GPSManager 內部不向外暴露。"""
 
     # (video_path, has_gps, track_count, tracks)
-    finished = pyqtSignal(str, bool, int, object)
+    # ⚠️ 不可命名為 finished——會遮蔽 QThread 內建信號，執行緒崩潰時完全靜默
+    result_ready = pyqtSignal(str, bool, int, object)
 
     def __init__(self, parser: GPSParser, parent: object | None = None) -> None:
         super().__init__(parent)
@@ -48,7 +49,7 @@ class _GPSLoadThread(QThread):
             track_count = len(tracks)
         if self._stop:
             return
-        self.finished.emit(self.parser.video_path, has_gps, track_count, tracks)
+        self.result_ready.emit(self.parser.video_path, has_gps, track_count, tracks)
 
 
 class GPSManager(QObject):
@@ -97,7 +98,7 @@ class GPSManager(QObject):
         self.gps_status_message.emit("正在偵測 GPS 軌跡...")
         self._parser._skip_ocr = run_ocr
         self._load_thread = _GPSLoadThread(self._parser, parent=self)
-        self._load_thread.finished.connect(self._on_load_finished)
+        self._load_thread.result_ready.connect(self._on_load_finished)
         self._load_thread.start()
 
     def start_ocr_detection(self) -> None:
@@ -244,7 +245,7 @@ class GPSManager(QObject):
         if self._load_thread and self._load_thread.isRunning():
             self._load_thread.stop()
             try:
-                self._load_thread.finished.disconnect()
+                self._load_thread.result_ready.disconnect()
             except (TypeError, RuntimeError):
                 pass
             # OCR 載入需數秒，最多等待 15 秒

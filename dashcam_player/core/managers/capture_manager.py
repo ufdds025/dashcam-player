@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from dashcam_player.models.resolution import Resolution
     from dashcam_player.models.video_info import VideoInfo
 
+from dashcam_player.models.capture_settings import DEFAULT_OUTPUT_DIR
 from dashcam_player.utils.cv_utils import (
     apply_resolution,
     imwrite_safe,
@@ -104,8 +105,8 @@ class CaptureManager(QObject):
         res_str = resolution.value if hasattr(resolution, "value") else str(resolution)
         frame_out = apply_resolution(frame, res_str)
         gps_coord = self._get_gps_at_frame(frame_idx, fps, gps_manager)
-        os.makedirs(out_dir or os.path.abspath("captures"), exist_ok=True)
-        out_dir = out_dir or os.path.abspath("captures")
+        os.makedirs(out_dir or os.path.abspath(DEFAULT_OUTPUT_DIR), exist_ok=True)
+        out_dir = out_dir or os.path.abspath(DEFAULT_OUTPUT_DIR)
         ts = time.strftime("%Y%m%d_%H%M%S")
         ext = "jpg" if img_format == "JPEG" else "png"
         fname = f"{prefix}_{ts}.{ext}"
@@ -164,7 +165,7 @@ class CaptureManager(QObject):
             end_frame=end_frame,
             capture_fps=capture_fps,
             fps=original_fps,
-            output_dir=settings.output_dir or os.path.abspath("captures"),
+            output_dir=settings.output_dir or os.path.abspath(DEFAULT_OUTPUT_DIR),
             prefix=settings.prefix,
             img_format=settings.img_format,
             jpeg_quality=settings.jpeg_quality,
@@ -174,7 +175,7 @@ class CaptureManager(QObject):
             skip_overlay=settings.skip_gps_overlay,
         )
         self._batch_worker.progress.connect(self._on_batch_progress)
-        self._batch_worker.finished.connect(self._on_batch_finished)
+        self._batch_worker.result_ready.connect(self._on_batch_finished)
         self._batch_worker.failed.connect(self._on_batch_failed)
         if self._worker.isRunning():
             self._worker.release_cap_async()
@@ -184,7 +185,7 @@ class CaptureManager(QObject):
         if self._batch_worker and self._batch_worker.isRunning():
             self._safe_stop_worker(
                 self._batch_worker,
-                [self._batch_worker.progress, self._batch_worker.finished, self._batch_worker.failed],
+                [self._batch_worker.progress, self._batch_worker.result_ready, self._batch_worker.failed],
             )
             self._batch_worker = None
 

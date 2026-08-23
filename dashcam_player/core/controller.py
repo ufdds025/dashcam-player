@@ -396,9 +396,6 @@ class Controller(QObject):
     def export_gpx(self, output_path: str) -> bool:
         return self._gps.export_gpx(output_path)
 
-    def _overlay_gps_text(self, frame: np.ndarray, gps_coord: tuple) -> np.ndarray:
-        return self._gps.overlay_gps_text(frame, gps_coord)
-
     # ==================================================================
     # 設定
     # ==================================================================

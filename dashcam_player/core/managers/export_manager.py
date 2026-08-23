@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from dashcam_player.models.capture_settings import CaptureSettings
     from dashcam_player.models.video_info import VideoInfo
 
+from dashcam_player.models.capture_settings import DEFAULT_OUTPUT_DIR
 from dashcam_player.utils.ffmpeg import (
     build_export_cmd,
     detect_input_format,
@@ -92,7 +93,7 @@ class ExportManager(QObject):
                     settings = settings.replace(video_format=auto_fmt)
             fmt = settings.video_format.lower()
 
-        out_dir = settings.output_dir or os.path.abspath("captures")
+        out_dir = settings.output_dir or os.path.abspath(DEFAULT_OUTPUT_DIR)
         os.makedirs(out_dir, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
         out_path = os.path.join(out_dir, f"{settings.prefix}_{ts}.{fmt}")
@@ -123,7 +124,7 @@ class ExportManager(QObject):
         if self._export_worker and self._export_worker.isRunning():
             self._export_worker.stop()
             try:
-                self._export_worker.finished.disconnect()
+                self._export_worker.result_ready.disconnect()
             except TypeError:
                 pass
             self._export_worker.wait(3000)
@@ -131,7 +132,7 @@ class ExportManager(QObject):
         from dashcam_player.core.export_worker import ExportWorker
 
         self._export_worker = ExportWorker(cmd)
-        self._export_worker.finished.connect(self._on_export_finished)
+        self._export_worker.result_ready.connect(self._on_export_finished)
         self._export_worker.start()
 
     def _on_export_finished(self, success: bool, message: str) -> None:
@@ -167,7 +168,7 @@ class ExportManager(QObject):
         if self._export_worker and self._export_worker.isRunning():
             self._export_worker.stop()
             try:
-                self._export_worker.finished.disconnect()
+                self._export_worker.result_ready.disconnect()
             except TypeError:
                 pass
             self._export_worker.wait(3000)

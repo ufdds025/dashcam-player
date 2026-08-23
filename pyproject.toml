@@ -84,3 +84,8 @@ module = [
     "dashcam_player.tests.test_performance",
 ]
 disable_error_code = ["attr-defined"]
+
+# PyQt5 stub 缺 QSettings.IniFormat / UserScope enum 屬性
+[[tool.mypy.overrides]]
+module = "dashcam_player.tests.conftest"
+disable_error_code = ["attr-defined"]

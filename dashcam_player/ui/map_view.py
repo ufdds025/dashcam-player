@@ -107,7 +107,15 @@ class MapView(QWidget):
         else:
             log.warning("地圖 HTML 載入失敗")
 
-    def closeEvent(self, event) -> None:
-        self.web_view.loadFinished.disconnect(self._on_load_finished)
+    def cleanup(self) -> None:
+        """釋放 WebEngine 資源。
+
+        內嵌子 widget 收不到 closeEvent，須由 parent 視窗的
+        closeEvent 明確呼叫（VideoPlayer.closeEvent）。
+        """
+        try:
+            self.web_view.loadFinished.disconnect(self._on_load_finished)
+        except TypeError:
+            pass  # 尚未連接或已斷開
+        self.web_view.stop()
         self.web_view.setHtml("")
-        super().closeEvent(event)

@@ -5,7 +5,7 @@
 ## 執行
 
 ```bash
-pip install PyQt5 PyQtWebEngine opencv-python numpy pytesseract piexif requests
+pip install PyQt5 PyQtWebEngine opencv-python numpy piexif requests
 python -m dashcam_player.main
 ```
 
@@ -41,6 +41,8 @@ dashcam_player/                  # 含 __init__.py（regular package）
 │   ├── styles.py           # 全域 UI 樣式常數
 │   ├── map_view.py         # QWebEngineView + Leaflet.js 地圖元件
 │   ├── playback_controls.py # PlaybackControls widget（重構後啟用）
+│   ├── widgets/            # 可重複使用子元件
+│   │   └── encoder_fields.py # 編碼器欄位工廠（主視窗唯讀顯示與 CaptureSettingsDialog 共用；CRF/preset/scale 清單與 tooltip 單一來源）
 │   └── dialogs/            # 對話框
 │       ├── capture_settings.py
 │       ├── gps_settings.py
@@ -141,6 +143,20 @@ python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
 - **shutdown**：務必呼叫 `_cancel_export()`（而非 `stop_export()`）以清除 `_export_params` 來阻止 retry worker 洩漏
 - **stop / wait**：所有 stop 方法在 `wait()` 前須 `try: disconnect()` 避免 callback 在 wait 期間觸發
 - **Logging**：使用標準 `logging` 模組搭配 `RotatingFileHandler`，日誌寫入 `tempfile.gettempdir() / dashcam_debug.log`
+
+### v7 新增陷阱（signal / 資源生命週期）
+
+- **⚠️ QThread 子類禁止定義 `finished = pyqtSignal(...)`**：會遮蔽 C++ 內建「執行緒結束」信號——run() 內未捕捉的例外導致執行緒死亡時完全靜默，UI 無限等待。自訂完成信號一律命名 `result_ready`（`ExportWorker`/`BatchCaptureWorker`/`_GPSLoadThread` 已改）；播放 EOF 專用信號沿用 `play_finished`
+- **`VideoWorker.run()` 提取為 `run()` + `_run_loop()`**：cap 建立後立即進 `try/finally` 釋放；三個 early return（開檔失敗/幀數 0/首幀失敗）舊版發生在 try 之前會洩漏 VideoCapture。修改解碼流程時不可把 early return 移出 try 保護範圍
+- **`has_ocr_gps()` 解碼器釋放**：以 `caps: list` 收集所有 VideoCapture，統一由 `finally` 迴圈 release；新增 cap 時務必 append 進 list，勿寫 inline release
+- **`_parse_gpx` 不變式**：回傳的 tracks 必已相對化（time_base 非 None），否則回空列表。例外路徑回傳部分解析結果會讓 epoch 秒數（1.7e9）被當相對時間污染插值；回空列表可讓呼叫端繼續走 embedded/OCR fallback chain
+- **批次截圖取消進度**：取消時 emit `progress(processed, total)` 如實回報，禁止 force-emit `(total, total)` 偽造 100%
+- **`find_ffmpeg()` 只快取正向結果**：負結果每次重探（使用者中途安裝 FFmpeg 無須重啟）。測試用 `_clear_ffmpeg_cache()` 重置
+- **`MapView.cleanup()` 由 parent 呼叫**：內嵌子 widget 永遠收不到 `closeEvent`，WebEngine 資源釋放掛在 `VideoPlayer.closeEvent` → `map_view.cleanup()`；不要把清理邏輯寫回 MapView.closeEvent
+- **`load_capture_settings()` 平鋪欄位來源**：平鋪欄位定義在 sub-dataclass（Screenshot/Export/GpsDisplay），`CaptureSettings.__dataclass_fields__` 只有 screenshot/export/gps 三個組合欄位——直接迭代後者一個設定都載不到。經由 `_flat_capture_fields()` 取得欄位表
+- **QSettings 型別還原**：Windows 後端會把 bool/int/float 存成字串；讀回一律過 `_coerce_by_field_type(val, field.type)`，還原失敗略過該 key 用 dataclass 預設值。⚠️ 不可用 `value(key, default, type=float)` 讀可能損毀的 key——PyQt 遇不相容字串會拋 TypeError 而非回傳預設值
+- **QSettings 測試隔離**：`conftest.isolated_qsettings` autouse fixture 以子類強制 IniFormat 並替換 `config.settings.QSettings` 名稱（`QSettings(org, app)` 兩參建構子在 Windows 永遠走登錄檔，setDefaultFormat/setPath 對它無效）
+- **常數單一來源**：預設輸出目錄用 `models.capture_settings.DEFAULT_OUTPUT_DIR`、「不縮放」sentinel 用 `SCALE_ORIGINAL`（必須與 `Resolution.ORIGINAL.value` 一致，改動會讓匯出縮放靜默失效）；編碼器清單/tooltip 用 `ui/widgets/encoder_fields.py` 的工廠函式
 
 ## GPS 相關已知陷阱
 

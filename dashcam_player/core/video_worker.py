@@ -109,10 +109,8 @@ class VideoWorker(QThread):
     def close(self) -> None:
         self._stop = True
         # push STOP 喚醒可能阻塞在 msleep 的 loop，確保盡快退出
-        try:
-            self._cmd_queue.put_nowait(_Command(_CmdType.STOP))
-        except queue.Full:
-            pass
+        # （queue 為 unbounded，put_nowait 不會 raise Full）
+        self._cmd_queue.put_nowait(_Command(_CmdType.STOP))
 
     def _drain_commands(self) -> None:
         while True:
@@ -128,18 +126,6 @@ class VideoWorker(QThread):
             except Exception:
                 pass
             self.cap = None
-
-    @property
-    def frame_count(self) -> int:
-        return self._total_frames
-
-    @property
-    def current_index(self) -> int:
-        return self._current_idx
-
-    @property
-    def fps(self) -> float:
-        return self._fps
 
     def set_target_fps(self, fps: float) -> None:
         self._target_fps = fps
@@ -240,7 +226,18 @@ class VideoWorker(QThread):
 
     def run(self) -> None:
         self.cap = open_video_capture(self._path, self._hw_backends)
+        try:
+            # cap 建立後任何路徑（early return / 例外）都必須釋放解碼器；
+            # 舊版三個 early return 發生在 try 之前，會洩漏 VideoCapture
+            self._run_loop()
+        finally:
+            if self.cap:
+                self.cap.release()
+                self.cap = None
 
+    def _run_loop(self) -> None:
+        if self.cap is None:  # run() 必已賦值；此守衛同時供型別窄化
+            return
         if not self.cap.isOpened():
             log.error(f"無法開啟影片: {self._path}")
             self.load_failed.emit(f"無法開啟影片: {self._path}")
@@ -292,76 +289,71 @@ class VideoWorker(QThread):
         playing = False
         last_emit_time = time.monotonic()
 
-        try:
-            while not self._stop:
-                try:
-                    cmd = self._cmd_queue.get_nowait()
-                except queue.Empty:
-                    cmd = None
+        while not self._stop:
+            try:
+                cmd = self._cmd_queue.get_nowait()
+            except queue.Empty:
+                cmd = None
 
-                if cmd is not None:
-                    if cmd.type == _CmdType.STOP:
+            if cmd is not None:
+                if cmd.type == _CmdType.STOP:
+                    playing = False
+                elif cmd.type == _CmdType.PAUSE:
+                    playing = False
+                elif cmd.type == _CmdType.PLAY:
+                    # A9: 批次釋放後重建解碼器
+                    if not self._ensure_cap():
+                        log.warning("play 但解碼器重建失敗，放棄播放")
                         playing = False
-                    elif cmd.type == _CmdType.PAUSE:
-                        playing = False
-                    elif cmd.type == _CmdType.PLAY:
-                        # A9: 批次釋放後重建解碼器
-                        if not self._ensure_cap():
-                            log.warning("play 但解碼器重建失敗，放棄播放")
-                            playing = False
-                        else:
-                            playing = True
-                    elif cmd.type == _CmdType.RELEASE_CAP:
-                        # A9: 釋放解碼器資源（批次截圖期間）
-                        self.release_cap()
-                        playing = False
-                    elif cmd.type == _CmdType.SEEK:
-                        # 維持播放狀態：拖動進度條後繼續播放（單步仍暫停）
-                        self._do_seek(cmd.frame)
-                        last_emit_time = time.monotonic()
-                        continue
-                    elif cmd.type == _CmdType.STEP_FWD:
-                        playing = False
-                        target = self._current_idx + 1
-                        if 0 <= target < self._total_frames:
-                            self._do_seek(target)
-                        last_emit_time = time.monotonic()
-                        continue
-                    elif cmd.type == _CmdType.STEP_BWD:
-                        playing = False
-                        target = self._current_idx - 1
-                        if 0 <= target < self._total_frames:
-                            self._do_seek(target)
-                        last_emit_time = time.monotonic()
-                        continue
-
-                # === 播放模式 ===
-                if playing:
-                    now = time.monotonic()
-                    elapsed = now - last_emit_time
-                    frame_interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.033
-
-                    if elapsed < frame_interval:
-                        remaining_ms = (frame_interval - elapsed) * 1000
-                        if remaining_ms >= 5:
-                            self.msleep(int(remaining_ms * 0.8))
-                        continue
-
-                    ret, frame = self.cap.read()
-                    if not ret:
-                        log.debug(f"播放結束 (idx={self._current_idx})")
-                        playing = False
-                        self.play_finished.emit()
-                        continue
-
-                    self._current_idx += 1
-                    self.frame_ready.emit(frame, self._current_idx)
-                    pos = self._current_idx / self._fps
-                    self.position_changed.emit(pos, self._current_idx)
+                    else:
+                        playing = True
+                elif cmd.type == _CmdType.RELEASE_CAP:
+                    # A9: 釋放解碼器資源（批次截圖期間）
+                    self.release_cap()
+                    playing = False
+                elif cmd.type == _CmdType.SEEK:
+                    # 維持播放狀態：拖動進度條後繼續播放（單步仍暫停）
+                    self._do_seek(cmd.frame)
                     last_emit_time = time.monotonic()
-                else:
-                    self.msleep(20)
-        finally:
-            if self.cap:
-                self.cap.release()
-                self.cap = None
+                    continue
+                elif cmd.type == _CmdType.STEP_FWD:
+                    playing = False
+                    target = self._current_idx + 1
+                    if 0 <= target < self._total_frames:
+                        self._do_seek(target)
+                    last_emit_time = time.monotonic()
+                    continue
+                elif cmd.type == _CmdType.STEP_BWD:
+                    playing = False
+                    target = self._current_idx - 1
+                    if 0 <= target < self._total_frames:
+                        self._do_seek(target)
+                    last_emit_time = time.monotonic()
+                    continue
+
+            # === 播放模式 ===
+            if playing:
+                now = time.monotonic()
+                elapsed = now - last_emit_time
+                frame_interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.033
+
+                if elapsed < frame_interval:
+                    remaining_ms = (frame_interval - elapsed) * 1000
+                    if remaining_ms >= 5:
+                        self.msleep(int(remaining_ms * 0.8))
+                    continue
+
+                ret, frame = self.cap.read()
+                if not ret:
+                    log.debug(f"播放結束 (idx={self._current_idx})")
+                    playing = False
+                    self.play_finished.emit()
+                    continue
+
+                self._current_idx += 1
+                self.frame_ready.emit(frame, self._current_idx)
+                pos = self._current_idx / self._fps
+                self.position_changed.emit(pos, self._current_idx)
+                last_emit_time = time.monotonic()
+            else:
+                self.msleep(20)

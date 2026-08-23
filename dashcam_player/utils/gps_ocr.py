@@ -35,6 +35,55 @@ log = get_logger()
 #   24.338535N, 120.455958E
 #   24.338535 N 120.455958 E
 _GPS_PATTERN = re.compile(r"(\d{1,3}\.\d{2,})\s*([NS])\s*[,，\s]\s*(\d{1,3}\.\d{2,})\s*([EW])")
+# 前綴格式: N24.338535 E120.455958（半球字母在前，部分機種使用）
+_GPS_PREFIX_PATTERN = re.compile(
+    r"([NS])\s*(\d{1,3}\.\d{2,})\s*[,，\s]\s*([EW])\s*(\d{1,3}\.\d{2,})"
+)
+
+
+def _match_gps_text(text: str) -> tuple[float, float] | None:
+    """從 OCR 文字解析 GPS 座標（純函式，零 tesseract 依賴）。
+
+    支援格式:
+      - 24.338535N 120.455958E
+      - 24.338535N, 120.455958E
+      - N24.338535 E120.455958
+
+    S/W 為負號；超出 ±90/±180 回 None。
+    """
+    if not text:
+        return None
+
+    m = _GPS_PATTERN.search(text)
+    if m is not None:
+        try:
+            lat = float(m.group(1))
+            lat_dir = m.group(2).upper()
+            lon = float(m.group(3))
+            lon_dir = m.group(4).upper()
+        except ValueError:
+            return None
+    else:
+        m = _GPS_PREFIX_PATTERN.search(text)
+        if m is None:
+            return None
+        try:
+            lat_dir = m.group(1).upper()
+            lat = float(m.group(2))
+            lon_dir = m.group(3).upper()
+            lon = float(m.group(4))
+        except ValueError:
+            return None
+
+    if lat_dir == "S":
+        lat = -lat
+    if lon_dir == "W":
+        lon = -lon
+
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+
+    return (lat, lon)
 
 
 def _run_tesseract(
@@ -248,34 +297,5 @@ class GPSOCR:
 
     @staticmethod
     def _parse_gps_text(text: str) -> tuple[float, float] | None:
-        """從 OCR 文字中解析 GPS 座標
-
-        支援格式:
-        - 24.338535N 120.455958E
-        - 24.338535N, 120.455958E
-        - N24.338535 E120.455958
-        """
-        if not text:
-            return None
-
-        m = _GPS_PATTERN.search(text)
-        if m is None:
-            return None
-
-        try:
-            lat = float(m.group(1))
-            lat_dir = m.group(2).upper()
-            lon = float(m.group(3))
-            lon_dir = m.group(4).upper()
-
-            if lat_dir == "S":
-                lat = -lat
-            if lon_dir == "W":
-                lon = -lon
-
-            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-                return None
-
-            return (lat, lon)
-        except (ValueError, IndexError):
-            return None
+        """從 OCR 文字中解析 GPS 座標（委派至模組級 _match_gps_text）"""
+        return _match_gps_text(text)
