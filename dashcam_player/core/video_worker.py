@@ -14,6 +14,7 @@ from dashcam_player.models.video_info import VideoInfo
 from dashcam_player.utils.cv_utils import decode_fourcc, open_video_capture
 from dashcam_player.utils.ffmpeg import get_keyframe_positions
 from dashcam_player.utils.log import get_logger
+from dashcam_player.utils.pts_loader import load_pts_and_keyframes_sync
 
 log = get_logger()
 
@@ -78,7 +79,9 @@ class VideoWorker(QThread):
         self._current_idx = 0
         self._keyframe_loaded = False
         self._keyframe_times = None
-        # 背景預載關鍵影格表，首次 seek 不需同步跑 ffprobe（長影片不再卡頓）
+        self._pts_list = []
+        self._pts_quality = "UNSAFE"
+        # 背景預載關鍵影格時間表 + 全幀 PTS，避免雙重 ffprobe
         self._start_keyframe_loader()
         # 清空任何舊指令，開啟後停在首幀（idle）
         self._drain_commands()
@@ -86,8 +89,10 @@ class VideoWorker(QThread):
         self.start()
 
     def _start_keyframe_loader(self) -> None:
-        """背景執行緒預載關鍵影格時間表（A2）。
-
+        """背景執行緒預載關鍵影格時間表 + 全幀 PTS (P1c)。
+        
+        合併原有 keyframe loader 與新的 pts_loader，
+        避免雙重 ffprobe 呼叫。
         seek 不阻塞：表格就緒前 `_do_seek` 直接交給 cv2 內部 seek。
         影片已切換時丟棄結果（以載入當下的 path 比對）。
         """
@@ -96,15 +101,19 @@ class VideoWorker(QThread):
             return
 
         def _load() -> None:
-            times = get_keyframe_positions(path)
+            pts_list, keyframe_times, quality = load_pts_and_keyframes_sync(path, timeout=30.0)
             if self._path != path:
                 return  # 影片已切換，丟棄過期結果
-            self._keyframe_times = times
-            if times:
-                log.info(f"關鍵影格索引載入完成: {len(times)} 個")
+            self._pts_list = pts_list
+            self._keyframe_times = keyframe_times
+            self._pts_quality = quality
+            if keyframe_times:
+                log.info(f"關鍵影格索引載入完成: {len(keyframe_times)} 個")
+            if pts_list:
+                log.info(f"PTS 陣列載入完成: {len(pts_list)} 幀, quality={quality}")
             self._keyframe_loaded = True
 
-        threading.Thread(target=_load, name="keyframe-loader", daemon=True).start()
+        threading.Thread(target=_load, name="pts-keyframe-loader", daemon=True).start()
 
     def close(self) -> None:
         self._stop = True
@@ -146,21 +155,36 @@ class VideoWorker(QThread):
         self._cmd_queue.put(_Command(_CmdType.STEP_BWD))
 
     def _nearest_keyframe_idx(self, target: int) -> int:
-        """回傳 <= target 的最近關鍵影格幀號（A2: keyframe-aware seek）。
+        """回傳 <= target 的最近關鍵影格幂號（A2: keyframe-aware seek）。
 
         有 keyframe 時間表時：找 <= target 時間的最大 keyframe，從該處向前解碼，
         避免 cv2 在關鍵影格稀疏影片上向後回溯導致長片卡頓。
         無 keyframe 表時回退為 target 本身（沿用 cv2 內部行為）。
+        
+        優先使用 PTS 陣列計算目標秒數（VFR 準確），回退用 fps 估算。
         """
         if not self._keyframe_times or self._fps <= 0:
             return target
-        target_sec = target / self._fps
+        
+        # 計算目標秒數：優先用 PTS，否則用 fps 估算
+        if self._pts_list and target < len(self._pts_list):
+            target_sec = self._pts_list[target]
+        else:
+            target_sec = target / self._fps
+        
         # bisect_right 找 <= target_sec 的最大 keyframe 時間（O(log n)）
         pos = bisect.bisect_right(self._keyframe_times, target_sec) - 1
         if pos < 0:
             return 0
         kf_sec = self._keyframe_times[pos]
-        return max(0, min(self._total_frames - 1, int(round(kf_sec * self._fps))))
+        
+        # 回傳幂號：優先用 PTS 反推，否則用 fps 估算
+        if self._pts_list:
+            # 在 PTS 陣列中找最接近 kf_sec 的索引
+            idx = bisect.bisect_left(self._pts_list, kf_sec)
+            return max(0, min(self._total_frames - 1, idx))
+        else:
+            return max(0, min(self._total_frames - 1, int(round(kf_sec * self._fps))))
 
     def _do_seek(self, target: int) -> None:
         """執行跳轉並 emit 結果（run loop 內呼叫）。A2: 先跳最近 keyframe 再向前解碼。"""
@@ -235,7 +259,7 @@ class VideoWorker(QThread):
                 self.cap.release()
                 self.cap = None
 
-    def _run_loop(self) -> None:
+def _run_loop(self) -> None:
         if self.cap is None:  # run() 必已賦值；此守衛同時供型別窄化
             return
         if not self.cap.isOpened():
@@ -248,7 +272,13 @@ class VideoWorker(QThread):
         self._fps = src_fps if src_fps > 0 else 30.0
         # 換檔重置為 1.0x；實際倍率由 PlaybackManager 於 video_info_ready 時套用
         self._target_fps = self._fps
-        duration = self._total_frames / self._fps if self._fps > 0 else 0
+        
+        # 使用 PTS 計算 duration（若可用），否則回退 fps 估算
+        if self._pts_list and len(self._pts_list) == self._total_frames:
+            duration = self._pts_list[-1] if self._pts_list else 0
+        else:
+            duration = self._total_frames / self._fps if self._fps > 0 else 0
+            
         fourcc_val = int(self.cap.get(cv2.CAP_PROP_FOURCC))
         codec_str = decode_fourcc(fourcc_val)
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -259,20 +289,21 @@ class VideoWorker(QThread):
         )
 
         if self._total_frames <= 0:
-            log.error("幀數為 0")
-            self.load_failed.emit("影片無效或無法讀取幀數")
+            log.error("幂數為 0")
+            self.load_failed.emit("影片無效或無法讀取幂數")
             return
 
-        # 解第一幀
+        # 解第一幂
         ret, frame = self.cap.read()
         if not ret:
-            log.error("第一幀讀取失敗")
-            self.load_failed.emit("無法解碼影片第一幀")
+            log.error("第一幂讀取失敗")
+            self.load_failed.emit("無法解碼影片第一幂")
             return
 
         self._current_idx = 0
         self.frame_ready.emit(frame, 0)
-        self.position_changed.emit(0.0, 0)
+        pos = self._pts_list[0] if self._pts_list else 0.0
+        self.position_changed.emit(pos, 0)
 
         self.video_info_ready.emit(
             VideoInfo(
@@ -335,7 +366,14 @@ class VideoWorker(QThread):
             if playing:
                 now = time.monotonic()
                 elapsed = now - last_emit_time
-                frame_interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.033
+                
+                # 使用 PTS 計算幀間隔（若可用），否則用 target_fps
+                if self._pts_list and self._current_idx + 1 < len(self._pts_list):
+                    next_pts = self._pts_list[self._current_idx + 1]
+                    current_pts = self._pts_list[self._current_idx] if self._current_idx < len(self._pts_list) else 0
+                    frame_interval = next_pts - current_pts
+                else:
+                    frame_interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.033
 
                 if elapsed < frame_interval:
                     remaining_ms = (frame_interval - elapsed) * 1000
@@ -352,7 +390,7 @@ class VideoWorker(QThread):
 
                 self._current_idx += 1
                 self.frame_ready.emit(frame, self._current_idx)
-                pos = self._current_idx / self._fps
+                pos = self._pts_list[self._current_idx] if self._pts_list and self._current_idx < len(self._pts_list) else self._current_idx / self._fps
                 self.position_changed.emit(pos, self._current_idx)
                 last_emit_time = time.monotonic()
             else:

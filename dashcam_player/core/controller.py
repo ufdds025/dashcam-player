@@ -15,8 +15,9 @@ from dashcam_player.core.managers.capture_manager import CaptureManager
 from dashcam_player.core.managers.export_manager import ExportManager
 from dashcam_player.core.managers.gps_facade import GPSFacade
 from dashcam_player.core.managers.playback_manager import PlaybackManager
+from dashcam_player.core.managers.speed_manager import SpeedManager
 from dashcam_player.core.video_worker import VideoWorker
-from dashcam_player.models.capture_settings import CaptureSettings
+from dashcam_player.models.capture_settings import CaptureSettings, SpeedSettings
 from dashcam_player.models.video_info import VideoInfo
 from dashcam_player.utils.cv_utils import detect_hw_backends
 from dashcam_player.utils.log import get_logger
@@ -47,6 +48,10 @@ class Controller(QObject):
     frame_ready = pyqtSignal(object, int)  # (frame_bgr, frame_index)
     position_updated = pyqtSignal(float, int)  # (seconds, frame_index)
     play_finished = pyqtSignal()
+    
+    # Speed 相關
+    speed_updated = pyqtSignal(float, float, str, str)  # (time, speed_kmh, confidence_level, source)
+    speed_ready = pyqtSignal(str, object)  # (video_path, SpeedTrack)
 
     # ==================================================================
     # 初始化
@@ -62,24 +67,26 @@ class Controller(QObject):
         self.video_info: VideoInfo | None = None
         self._capture_start_frame: int = -1
         self._capture_end_frame: int = -1
-
+        
         self._hw_backends = detect_hw_backends()
         self._app_settings = AppSettings()
         self._settings = self._app_settings.load_capture_settings()
-
+        
         # Workers
         self._worker = VideoWorker(hw_backends=self._hw_backends)
-
+        
         # Managers
         self._playback = PlaybackManager(self._worker, parent=self)
         self._capture = CaptureManager(self._worker, self._hw_backends, parent=self)
         self._export = ExportManager(parent=self)
         self._gps = GPSFacade(parent=self)
         self._gps.set_app_settings(self._app_settings)
-
+        self._speed = SpeedManager(parent=self)
+        self._speed.set_app_settings(self._app_settings)
+        
         # Worker 輸出信號 → PlaybackManager（frame/position/video_info 轉發鏈）
         self._playback.connect_worker_signals()
-
+        
         self._connect_manager_signals()
 
     def _connect_manager_signals(self) -> None:
@@ -108,13 +115,19 @@ class Controller(QObject):
         self._gps.gps_ready.connect(self.gps_ready)
         self._gps.status_message.connect(self.status_message)
 
+        # SpeedManager → Controller relay
+        self._speed.speed_updated.connect(self.speed_updated)
+        self._speed.speed_ready.connect(self.speed_ready)
+        self._speed.status_message.connect(self.status_message)
+        self._speed.error_occurred.connect(self.error_occurred)
+
     # ==================================================================
     # 內部 signal handlers（轉發至 Controller signals）
     # ==================================================================
-
+    
     def _on_frame_ready(self, frame: np.ndarray, idx: int) -> None:
         self.frame_ready.emit(frame, idx)
-
+    
     def _on_video_info_ready(self, info: VideoInfo) -> None:
         info.path = self._video_path
         self.video_info = info
@@ -122,13 +135,13 @@ class Controller(QObject):
         self._export.set_video_context(self._video_path, info)
         self._gps.set_video_context(self._video_path, info)
         self.video_loaded.emit(self.video_info)
-
+    
     def _on_position_changed(self, sec: float, frame_idx: int) -> None:
         self.position_updated.emit(sec, frame_idx)
         # GPS throttling
         if self._playback.increment_gps_throttle():
             self._gps.emit_gps_position(sec)
-
+    
     def _on_play_finished(self) -> None:
         self.play_finished.emit()
         self.status_message.emit("Playback finished")
@@ -136,11 +149,12 @@ class Controller(QObject):
     # ==================================================================
     # 影片開啟與關閉
     # ==================================================================
-
+    
     def open_video(self, path: str) -> None:
         self._export.cancel_export()
         self._capture.stop_batch()
         self._gps.close_gps_manager()
+        self._speed.stop_scan()  # 停止速度掃描
 
         if self._worker.isRunning():
             self._worker.close()
@@ -155,6 +169,7 @@ class Controller(QObject):
         # 立即設定 facade 的 video context，避免 GPS 背景載入先於 video_info_ready 完成時，
         # on_gps_loaded 的 path 比對誤判為過期結果而丟棄（video_info 稍後由 _on_video_info_ready 更新）
         self._gps.set_video_context(path, None)
+        self._speed.set_video_context(path, None)  # 同步設定 SpeedManager video context
         self._capture_start_frame = -1
         self._capture_end_frame = -1
         self._playback.reset_gps_throttle()
@@ -165,6 +180,11 @@ class Controller(QObject):
             path, skip_ocr=True, app_settings=self._app_settings, parent=self,
         )
         self._gps_manager.start_background_load()
+        
+        # 同步 SpeedManager 設定
+        self._speed.set_speed_settings(self._settings.speed)
+        if self._settings.speed.enabled:
+            self._speed.start_scan()
 
     # ==================================================================
     # 唯讀 properties（delegation）
@@ -223,16 +243,20 @@ class Controller(QObject):
         return self._video_path
 
     @property
+    def speed_settings(self) -> SpeedSettings:
+        return self._speed.speed_settings
+
+    @property
     def has_roi_setting(self) -> bool:
         return self._gps.has_roi_setting
 
     @property
     def has_gps_manager(self) -> bool:
         return self._gps.has_manager
-
+    
     def gps_is_loaded(self) -> bool:
         return self._gps.is_loaded()
-
+    
     def gps_track_count(self) -> int:
         return self._gps.get_track_count()
 
@@ -248,46 +272,46 @@ class Controller(QObject):
     # ==================================================================
     # 播放控制（delegation）
     # ==================================================================
-
+    
     def toggle_play(self) -> bool:
         return self._playback.toggle_play()
-
+    
     def seek(self, frame_idx: int) -> None:
         self._playback.seek(frame_idx)
-
+    
     def seek_to(self, frame_idx: int) -> None:
         self._playback.seek_to(frame_idx)
-
+    
     def skip(self, seconds: float) -> None:
         self._playback.skip(seconds)
-
+    
     def set_playback_speed(self, speed: float) -> None:
         self._playback.set_playback_speed(speed)
-
+    
     def step_forward(self) -> None:
         self._playback.step_forward()
-
+    
     def step_backward(self) -> None:
         self._playback.step_backward()
-
+    
     def get_current_frame_index(self) -> int:
         return self._playback.get_current_frame_index()
-
+    
     def get_current_time(self) -> float:
         return self._playback.get_current_time()
 
     # ==================================================================
     # 驗證方法
     # ==================================================================
-
+    
     def validate_batch_range(self) -> str | None:
         return self._capture.validate_batch_range(
             self.total_frames, self.capture_start_frame, self.capture_end_frame
         )
-
+    
     def check_batch_conflict(self, out_dir: str, prefix: str, ext: str) -> list[str]:
         return self._capture.check_batch_conflict(out_dir, prefix, ext)
-
+    
     def validate_export_times(
         self, start_time: str, end_time: str
     ) -> tuple[float | None, float | None, str | None]:
@@ -315,7 +339,7 @@ class Controller(QObject):
     # ==================================================================
     # 截圖（delegation）
     # ==================================================================
-
+    
     def capture_single(
         self,
         out_dir: str,
@@ -334,7 +358,7 @@ class Controller(QObject):
             frame, out_dir, prefix, img_format, quality, resolution,
             frame_idx, self.fps, self._gps_manager,
         )
-
+    
     def start_batch_capture(
         self,
         start_frame: int,
@@ -351,7 +375,7 @@ class Controller(QObject):
     # ==================================================================
     # 匯出（delegation）
     # ==================================================================
-
+    
     def start_video_export(
         self,
         start_sec: float,
@@ -365,48 +389,48 @@ class Controller(QObject):
         )
         if corrected is not None:
             self._capture_settings = corrected
-
+    
     def stop_export(self) -> None:
         self._export.stop_export()
-
+    
     def _cancel_export(self) -> None:
         self._export.cancel_export()
 
     # ==================================================================
     # GPS（delegation）
     # ==================================================================
-
+    
     def open_roi_adjust_dialog(self) -> None:
         self._gps.open_roi_adjust_dialog()
-
+    
     def has_gps_data(self) -> bool:
         return self._gps.has_gps_data()
-
+    
     def get_gps_tracks(self) -> list:
         return self._gps.get_gps_tracks()
-
+    
     def get_gps_bounds(self):
         return self._gps.get_gps_bounds()
-
+    
     def start_gps_ocr_detection(self) -> None:
         """手動觸發 OCR GPS 偵測（使用者開啟「顯示 GPS 軌跡」時呼叫）"""
         if self._gps_manager is not None:
             self._gps_manager.start_ocr_detection()
-
+    
     def export_gpx(self, output_path: str) -> bool:
         return self._gps.export_gpx(output_path)
 
     # ==================================================================
     # 設定
     # ==================================================================
-
+    
     def update_capture_settings(self, new_settings: CaptureSettings) -> None:
         self._settings = new_settings
 
     # ==================================================================
     # 清除
     # ==================================================================
-
+    
     def shutdown(self) -> None:
         self._worker.close()
         if not self._worker.wait(3000):
@@ -416,3 +440,4 @@ class Controller(QObject):
         self._capture.stop_batch()
         self._export.cancel_export()
         self._gps.close_gps_manager()
+        self._speed.close()

@@ -10,20 +10,22 @@ from dashcam_player.models.capture_settings import (
     ExportSettings,
     GpsDisplaySettings,
     ScreenshotSettings,
+    SpeedSettings,
 )
 from dashcam_player.models.gps_roi import GPSROISetting
+from dashcam_player.models.speed import CalibrationProfile
 
 
 @functools.lru_cache(maxsize=1)
 def _flat_capture_fields() -> dict[str, str]:
-    """平鋪欄位名 → 型別註記字串（彙整自三個 sub-dataclass）。
+    """平鋪欄位名 → 型別註記字串（彙整自四個 sub-dataclass）。
 
     CaptureSettings 為組合式 dataclass，自身欄位只有
-    screenshot/export/gps；實際設定的平鋪名稱（fps、prefix…）
+    screenshot/export/gps/speed；實際設定的平鋪名稱（fps、prefix…）
     定義在 sub-dataclass 中。
     """
     fields: dict[str, str] = {}
-    for cls in (ScreenshotSettings, ExportSettings, GpsDisplaySettings):
+    for cls in (ScreenshotSettings, ExportSettings, GpsDisplaySettings, SpeedSettings):
         for f in cls.__dataclass_fields__.values():
             fields[f.name] = str(f.type)
     return fields
@@ -108,9 +110,9 @@ class AppSettings:
     def load_capture_settings(self) -> CaptureSettings:
         """載入截圖設定。
 
-        ⚠️ 平鋪欄位定義在 sub-dataclass（Screenshot/Export/GpsDisplay）
+        ⚠️ 平鋪欄位定義在 sub-dataclass（Screenshot/Export/GpsDisplay/Speed）
         而非 CaptureSettings 自身——後者的 __dataclass_fields__ 只有
-        screenshot/export/gps 三個組合欄位，直接迭代會一個設定都載不到。
+        screenshot/export/gps/speed 四個組合欄位，直接迭代會一個設定都載不到。
         """
         data: dict = {}
         skip_keys = {"start_frame", "end_frame", "start_time", "end_time", "window_geometry"}
@@ -129,6 +131,26 @@ class AppSettings:
     def save_capture_settings(self, settings: CaptureSettings) -> None:
         for key, val in settings.to_dict().items():
             self._store.setValue(f"capture/{key}", val)
+
+    # ---- Speed 設定 ----
+
+    def load_speed_settings(self) -> SpeedSettings:
+        """載入軟體測速設定"""
+        data: dict = {}
+        flat_fields = _flat_capture_fields()
+        for key in flat_fields:
+            if key in SpeedSettings.__dataclass_fields__:
+                val = self._store.value(f"capture/{key}")
+                if val is not None:
+                    coerced = _coerce_by_field_type(val, flat_fields[key])
+                    if coerced is not None:
+                        data[key] = coerced
+        return SpeedSettings(**data) if data else SpeedSettings()
+
+    def save_speed_settings(self, settings: SpeedSettings) -> None:
+        for key, val in settings.to_dict().items():
+            if key in SpeedSettings.__dataclass_fields__:
+                self._store.setValue(f"capture/{key}", val)
 
     # ---- GPS ROI 設定 ----
 
@@ -175,6 +197,88 @@ class AppSettings:
         self._store.setValue(f"{key}/source", setting.source)
         self._store.setValue(f"{key}/confidence", setting.confidence)
         self._store.setValue(f"{key}/timestamp", setting.timestamp)
+        self._store.sync()
+
+    # ---- Speed ROI 設定 ----
+
+    def _speed_roi_key(self, resolution_w: int, resolution_h: int, file_format: str) -> str:
+        fmt = file_format.upper().lstrip(".")
+        return f"speed_roi/{resolution_w}x{resolution_h}_{fmt}"
+
+    def load_speed_roi(
+        self, resolution_w: int, resolution_h: int, file_format: str
+    ) -> dict | None:
+        key = self._speed_roi_key(resolution_w, resolution_h, file_format)
+        x = self._store.value(f"{key}/x")
+        if x is None:
+            return None
+        y = self._store.value(f"{key}/y")
+        w = self._store.value(f"{key}/w")
+        h = self._store.value(f"{key}/h")
+        if None in (y, w, h):
+            return None
+        return {
+            "x": float(x),
+            "y": float(y),
+            "w": float(w),
+            "h": float(h),
+            "corner": self._store.value(f"{key}/corner", "", type=str),
+        }
+
+    def save_speed_roi(self, roi: dict) -> None:
+        # roi dict should have: resolution_w, resolution_h, file_format, x, y, w, h, corner
+        key = self._speed_roi_key(roi["resolution_w"], roi["resolution_h"], roi["file_format"])
+        self._store.setValue(f"{key}/x", roi["x"])
+        self._store.setValue(f"{key}/y", roi["y"])
+        self._store.setValue(f"{key}/w", roi["w"])
+        self._store.setValue(f"{key}/h", roi["h"])
+        self._store.setValue(f"{key}/corner", roi.get("corner", ""))
+        self._store.sync()
+
+    # ---- Speed Calibration 設定 ----
+
+    def _calib_key(self, camera_profile: str, resolution_w: int, resolution_h: int, file_format: str) -> str:
+        fmt = file_format.upper().lstrip(".")
+        return f"speed_calibration/{camera_profile}/{resolution_w}x{resolution_h}_{fmt}"
+
+    def load_speed_calibration(
+        self, camera_profile: str, resolution_w: int, resolution_h: int, file_format: str
+    ) -> CalibrationProfile | None:
+        key = self._calib_key(camera_profile, resolution_w, resolution_h, file_format)
+        ratio = self._store.value(f"{key}/ratio")
+        if ratio is None:
+            return None
+        return CalibrationProfile(
+            camera_profile=camera_profile,
+            ratio=float(ratio),
+            offset=float(self._store.value(f"{key}/offset", 0.0)),
+            a=float(self._store.value(f"{key}/a", 1.0)),
+            sample_count=int(self._store.value(f"{key}/sample_count", 0)),
+            ratio_mad=float(self._store.value(f"{key}/ratio_mad", 0.0)),
+            ratio_std=float(self._store.value(f"{key}/ratio_std", 0.0)),
+            source_coverage=float(self._store.value(f"{key}/source_coverage", 0.0)),
+            speed_min=float(self._store.value(f"{key}/speed_min", 0.0)),
+            speed_max=float(self._store.value(f"{key}/speed_max", 0.0)),
+            confidence=float(self._store.value(f"{key}/confidence", 0.0)),
+            updated_at=float(self._store.value(f"{key}/updated_at", 0.0)),
+        )
+
+    def save_speed_calibration(self, profile: CalibrationProfile) -> None:
+        key = self._calib_key(profile.camera_profile, profile.resolution_w, profile.resolution_h, profile.file_format)
+        self._store.setValue(f"{key}/ratio", profile.ratio)
+        self._store.setValue(f"{key}/offset", profile.offset)
+        self._store.setValue(f"{key}/a", profile.a)
+        self._store.setValue(f"{key}/sample_count", profile.sample_count)
+        self._store.setValue(f"{key}/ratio_mad", profile.ratio_mad)
+        self._store.setValue(f"{key}/ratio_std", profile.ratio_std)
+        self._store.setValue(f"{key}/source_coverage", profile.source_coverage)
+        self._store.setValue(f"{key}/speed_min", profile.speed_min)
+        self._store.setValue(f"{key}/speed_max", profile.speed_max)
+        self._store.setValue(f"{key}/confidence", profile.confidence)
+        self._store.setValue(f"{key}/updated_at", profile.updated_at)
+        self._store.setValue(f"{key}/resolution_w", profile.resolution_w)
+        self._store.setValue(f"{key}/resolution_h", profile.resolution_h)
+        self._store.setValue(f"{key}/file_format", profile.file_format)
         self._store.sync()
 
     # ---- GPS 訊號過濾 ----

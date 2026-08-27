@@ -7,5 +7,6 @@ from dashcam_player.core.managers.capture_manager import CaptureManager
 from dashcam_player.core.managers.export_manager import ExportManager
 from dashcam_player.core.managers.gps_facade import GPSFacade
 from dashcam_player.core.managers.playback_manager import PlaybackManager
+from dashcam_player.core.managers.speed_manager import SpeedManager
 
-__all__ = ["PlaybackManager", "CaptureManager", "ExportManager", "GPSFacade"]
+__all__ = ["PlaybackManager", "CaptureManager", "ExportManager", "GPSFacade", "SpeedManager"]

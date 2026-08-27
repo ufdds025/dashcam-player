@@ -22,20 +22,23 @@ dashcam_player/                  # 含 __init__.py（regular package）
 ├── core/
 │   ├── controller.py       # Controller 層（薄 Orchestrator，委派 Manager）
 │   ├── video_player.py     # 瘦 UI 主視窗（僅佈局與事件綁定）
-│   ├── video_worker.py     # 播放背景執行緒（QThread）
+│   ├── video_worker.py     # 播放背景執行緒（QThread）+ PTS/keyframe 背景預載
 │   ├── export_worker.py    # FFmpeg 匯出執行緒
 │   ├── batch_capture.py    # 批次截圖背景執行緒
 │   ├── gps_manager.py      # GPSManager（GPS 載入/解析/查詢，封裝於獨立 QObject）
-│   └── managers/           # 四個 Manager（業務邏輯從 Controller 抽出）
-│       ├── __init__.py     # 匯出 PlaybackManager / CaptureManager / ExportManager / GPSFacade
+│   ├── speed_worker.py     # 軟體測速背景執行緒（vision-based speed estimation）
+│   └── managers/           # 五個 Manager（業務邏輯從 Controller 抽出）
+│       ├── __init__.py     # 匯出 PlaybackManager / CaptureManager / ExportManager / GPSFacade / SpeedManager
 │       ├── playback_manager.py  # 播放控制 + GPS throttle
 │       ├── capture_manager.py   # 單張/批次截圖 + 驗證
 │       ├── export_manager.py    # FFmpeg 匯出 + 重試
-│       └── gps_facade.py        # GPS 外觀模式（封裝 GPSManager）
+│       ├── gps_facade.py        # GPS 外觀模式（封裝 GPSManager）
+│       └── speed_manager.py     # 軟體測速管理器（視覺速度估算 + 校準）
 ├── models/
 │   ├── video_info.py       # VideoInfo dataclass
-│   ├── capture_settings.py # CaptureSettings 組合式 dataclass（Screenshot/Export/GPS + replace()）
+│   ├── capture_settings.py # CaptureSettings 組合式 dataclass（Screenshot/Export/GPS/Speed + replace()）
 │   ├── gps_roi.py          # GPSROISetting、GPSROIDetectionResult dataclass
+│   ├── speed.py            # SpeedTrack、SpeedPoint、CalibrationProfile dataclass
 │   └── resolution.py       # Resolution enum（解析度選項）
 ├── ui/
 │   ├── styles.py           # 全域 UI 樣式常數
@@ -57,6 +60,10 @@ dashcam_player/                  # 含 __init__.py（regular package）
 │   ├── gps_roi_detector.py # GPS ROI 自動偵測引擎（OpenCV 影像處理定位文字）
 │   ├── gps_roi_templates.py # 內建 GPS 位置模板（左上/右上/左下/右下）
 │   ├── osm_map.py          # OpenStreetMap 靜態縮圖 + Leaflet HTML 生成
+│   ├── pts_loader.py       # PTS + keyframe 時間表背景載入（合併 ffprobe 呼叫）
+│   ├── vision_speed.py     # 視覺速度估算引擎（光流法 + 幀間位移）
+│   ├── speed_calibration.py # 速度校準工具（已知距離 → px/m 轉換）
+│   ├── speed_cache.py      # 速度結果快取（避免重複計算）
 │   └── log.py              # logging 模組封裝（RotatingFileHandler）
 ├── config/
 │   └── settings.py         # QSettings 持久化
@@ -100,18 +107,19 @@ python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
   - `CaptureManager`（181 行）— 單張截圖 + 批次截圖 + validate_batch_range / check_batch_conflict
   - `ExportManager`（135 行）— FFmpeg 匯出 + stream-copy 重試
   - `GPSFacade`（132 行）— GPS 查詢/疊加/ROI 對話（封裝 GPSManager）
-- **Controller signals**（`controller.py`）— 定義 12 個 signal：`video_loaded(object)`、`load_failed(str)`、`error_occurred(str,str)`、`batch_progress(int,int)`、`batch_finished(int,int)`、`status_message(str)`、`export_finished(bool,str)`、`gps_position_updated(float,float)`、`gps_ready(str,bool,int)`、`frame_ready(object,int)`、`position_updated(float,int)`、`play_finished()`
+- **Controller signals**（`controller.py`）— 定義 14 個 signal：`video_loaded(object)`、`load_failed(str)`、`error_occurred(str,str)`、`batch_progress(int,int)`、`batch_finished(int,int)`、`status_message(str)`、`export_finished(bool,str)`、`gps_position_updated(float,float)`、`gps_ready(str,bool,int)`、`frame_ready(object,int)`、`position_updated(float,int)`、`play_finished()`、`speed_updated(float,float,str,str)`、`speed_ready(str,object)`
 - **Controller relay**（`controller.py`）— Manager 信號經 Controller relay 至 VideoPlayer，UI 不直接連接 Worker 或 Manager。`_on_frame_ready`、`_on_position_changed`、`_on_play_finished`、`_on_gps_loaded` 為 relay handlers。`error_occurred(title,message)` 由 `CaptureManager.error_occurred`（批次截圖失敗、單張儲存失敗）與 `VideoWorker.error_occurred`（seek 失敗等）relay，UI 統一彈 QMessageBox；`load_failed` 僅保留給「影片載入」失敗
 - **Controller methods**（`controller.py`）— `skip(seconds)`（相對 seek）、`seek_to(frame_idx)`（seek 別名）、`set_playback_speed(speed)`（→ `PlaybackManager.set_playback_speed()`，儲存 `_playback_speed` 倍率、換影片時自動重套）、`validate_batch_range()`（驗證標記範圍）、`check_batch_conflict(out_dir, prefix, ext)`（回傳衝突檔案列表）、`validate_export_times(start_time, end_time)`（驗證匯出時間範圍）
 - **`Controller.settings` property**（`controller.py`）— 回傳 `AppSettings` 實例（`self._app_settings`），用於視窗幾何、上次開啟目錄等持久化。`Controller.capture_settings` 為 `CaptureSettings` 唯一權威來源
 - **`capture_single` 簽章**（`controller.py`）— 委派至 `CaptureManager.capture_single()`，**不接收 frame 參數**，Controller 內部從 `current_frame` property（→ `PlaybackManager._current_frame`）取得目前顯示的 frame，frame 為 None 時回傳 None。View 不持有 frame 副本
 - **`Controller.current_frame` property**（`controller.py`）— 唯讀，回傳目前顯示的 frame（numpy ndarray 或 None）。View 端不持有 frame 副本，經由此 property 存取
 - **`video_loaded` signal**（`controller.py`）— `pyqtSignal(object)`，emit `VideoInfo` 實例（非 `str`）
-- **`CaptureSettings`**（`models/capture_settings.py`）— 組合式 dataclass：`ScreenshotSettings` / `ExportSettings` / `GpsDisplaySettings` + `__getattr__`/`__setattr__` 委派 + `replace()` instance method（取代 `dataclasses.replace()`，因自訂 `__init__(**kwargs)` 不相容）
+- **`CaptureSettings`**（`models/capture_settings.py`）— 組合式 dataclass：`ScreenshotSettings` / `ExportSettings` / `GpsDisplaySettings` / `SpeedSettings` + `__getattr__`/`__setattr__` 委派 + `replace()` instance method（取代 `dataclasses.replace()`，因自訂 `__init__(**kwargs)` 不相容）
 - **`VideoPlayer.settings` property**（`video_player.py`）— `@property` 委託至 `self.ctrl.capture_settings`，Controller 為唯一權威來源。所有設定寫入經由 `Controller.update_capture_settings()` + `settings.replace()`，UI 不長期持有參照。**不可將 `@property` 插入 `__init__` 內部，否則會截斷 `__init__` 導致 `_init_ui()` 等不執行**
 - **`VideoWorker(QThread)`** — 背景解碼，所有指令（play/pause/seek/step/stop/release_cap）經由 `queue.Queue[_Command]` 統一投遞，`run()` loop 單一消費，消除雙狀態變數競爭
   - **`RELEASE_CAP` + `_ensure_cap()`**（A9）：批次截圖前釋放主解碼器，播放時自動重建並 seek 回原位置
   - **Keyframe-aware seek**（A2）：`ffprobe` 載入關鍵影格時間表，`_nearest_keyframe_idx()` 跳最近 keyframe 再向前解碼，避免長 GOP 影片 seek 卡頓。**keyframe 表由 `open()` 啟動的 daemon thread 背景預載**（`get_keyframe_positions` 加 `-skip_frame nokey` 只輸出關鍵幀），表格就緒前 `_do_seek` 直接交給 cv2 內部 seek（不阻塞）；影片切換時以 `_path` 比對丟棄過期結果
+  - **PTS + keyframe 合併預載**（P1c）：`pts_loader.load_pts_and_keyframes_sync()` 單次 ffprobe 呼叫同時產出全幀 PTS 陣列與 keyframe 時間表，避免雙重 ffprobe。PTS 用於 VFR 準確的秒數計算與幀間隔，keyframe 用於 seek 優化
   - **SEEK 維持播放狀態**：拖動進度條後繼續播放（不靜默暫停），單步（STEP_FWD/BWD）仍暫停
   - **`_target_fps` 換檔重置**：`run()` 載入新影片時重設 `_target_fps = 原始 fps`（1.0x），實際倍率由 `PlaybackManager._playback_speed` 於 `video_info_ready` 時重套，避免換影片後速度錯亂
   - **播放中「最新幀」丟棄**（`video_player.py`）：播放時 `_on_frame_ready` 只保留最新幀，由 15ms 單發 `QTimer` 統一刷新，避免 UI 跟不上時信號佇列堆積造成拖影/延遲；暫停/單步/seek 仍即時顯示
@@ -131,6 +139,7 @@ python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
 - **`_current_idx` 執行緒安全**：`VideoWorker` 內 `run()` 為唯一寫入端；Controller 的 `_current_idx` 為獨立副本，經由 signal 取得最新值
 - **`position_changed` signal**：emit `(float, int)`，主執行緒直接使用傳入的 `frame_idx`
 - **`worker.close()`**：僅設定 `_stop = True`，不釋放 `cap`；`run()` 迴圈結束後自行釋放
+- **⚠️ class method 缩进缺失**：`def` 行若缺少 class 層級的 4 空格缩进（落至 column 0），Python 會在下一個 dedent 行報 `IndentationError: unindent does not match any outer indentation level`。這通常由壞 merge 或手動編輯造成——`def __init__` 或其他 class method 的 `def` 行是column 0，但 method body 仍在 8 空格。修復方法：確保所有 class method 的 `def` 行有 4 空格缩进
 - **⚠️ QThread `run()` 不可因 EOF `break`**：`VideoWorker.run()` 播放到尾端（`cap.read()` 失敗）時**不可** `break` 跳出 while 迴圈，否則 worker 執行緒終止，後續所有 play/seek 指令進了 queue 卻無人消費，UI 完全卡死。正確做法是 `playing = False; continue`，保持迴圈存活等待下一個指令。同理，`BatchCaptureWorker.run()` 也用 `try/finally` 確保 `cap.release()` 而非提前 return
 - **批次截圖**：由 `BatchCaptureWorker` 在背景執行緒順序讀取，完全脫離主執行緒
 - **JPEG 品質**：由 `quality_spin`（QSpinBox, 1-100, 預設 95）控制

@@ -50,10 +50,20 @@ class GpsDisplaySettings:
     gps_filter_max_distance: float = 2000.0
 
 
+@dataclass
+class SpeedSettings:
+    """軟體測速設定"""
+
+    enabled: bool = False
+    distance_per_cycle: float = 10.0
+    smoothing_window: int = 5
+    burn_speed_on_export: bool = False
+
+
 # 所有 sub-dataclass 欄位名的並集，用於 __getattr__ 委派
 _SUB_FIELD_NAMES: frozenset[str] = frozenset(
     f.name
-    for cls in (ScreenshotSettings, ExportSettings, GpsDisplaySettings)
+    for cls in (ScreenshotSettings, ExportSettings, GpsDisplaySettings, SpeedSettings)
     for f in cls.__dataclass_fields__.values()
 )
 
@@ -71,12 +81,14 @@ class CaptureSettings:
     screenshot: ScreenshotSettings = field(default_factory=ScreenshotSettings)
     export: ExportSettings = field(default_factory=ExportSettings)
     gps: GpsDisplaySettings = field(default_factory=GpsDisplaySettings)
+    speed: SpeedSettings = field(default_factory=SpeedSettings)
 
     def __init__(self, **kwargs: object) -> None:
         """支援平鋪 kwarg 建構（向後相容舊版 API）。"""
         s_kw: dict = {}
         e_kw: dict = {}
         g_kw: dict = {}
+        sp_kw: dict = {}
         for k, v in kwargs.items():
             if k in ScreenshotSettings.__dataclass_fields__:
                 s_kw[k] = v
@@ -84,30 +96,33 @@ class CaptureSettings:
                 e_kw[k] = v
             elif k in GpsDisplaySettings.__dataclass_fields__:
                 g_kw[k] = v
+            elif k in SpeedSettings.__dataclass_fields__:
+                sp_kw[k] = v
             else:
                 raise TypeError(f"CaptureSettings.__init__() got unexpected keyword argument '{k}'")
         object.__setattr__(self, "screenshot", ScreenshotSettings(**s_kw))
         object.__setattr__(self, "export", ExportSettings(**e_kw))
         object.__setattr__(self, "gps", GpsDisplaySettings(**g_kw))
+        object.__setattr__(self, "speed", SpeedSettings(**sp_kw))
 
     # ---- 向後相容：平鋪存取委派 ----
 
     def __getattr__(self, name: str) -> Any:
         # __dataclass_fields__ 在 __init__ 期間就存在，不會觸發 __getattr__
         if name in _SUB_FIELD_NAMES:
-            for sub in (self.screenshot, self.export, self.gps):
+            for sub in (self.screenshot, self.export, self.gps, self.speed):
                 if hasattr(sub, name):
                     return getattr(sub, name)
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # dataclass 自身的欄位（screenshot/export/gps）走正常流程
-        if name in ("screenshot", "export", "gps"):
+        # dataclass 自身的欄位（screenshot/export/gps/speed）走正常流程
+        if name in ("screenshot", "export", "gps", "speed"):
             super().__setattr__(name, value)
             return
         # sub-dataclass 欄位：委派寫入
         if name in _SUB_FIELD_NAMES:
-            for sub in (self.screenshot, self.export, self.gps):
+            for sub in (self.screenshot, self.export, self.gps, self.speed):
                 if hasattr(sub, name):
                     setattr(sub, name, value)
                     return
@@ -118,7 +133,7 @@ class CaptureSettings:
     def to_dict(self) -> dict:
         """展平為單層 dict，key 與舊版 CaptureSettings 完全相容。"""
         result: dict = {}
-        for sub in (self.screenshot, self.export, self.gps):
+        for sub in (self.screenshot, self.export, self.gps, self.speed):
             for f in sub.__dataclass_fields__.values():
                 val = getattr(sub, f.name)
                 if isinstance(val, Resolution):
@@ -142,6 +157,7 @@ class CaptureSettings:
         s_kw: dict = {}
         e_kw: dict = {}
         g_kw: dict = {}
+        sp_kw: dict = {}
         for k, v in data.items():
             if k in ScreenshotSettings.__dataclass_fields__:
                 s_kw[k] = v
@@ -149,6 +165,8 @@ class CaptureSettings:
                 e_kw[k] = v
             elif k in GpsDisplaySettings.__dataclass_fields__:
                 g_kw[k] = v
+            elif k in SpeedSettings.__dataclass_fields__:
+                sp_kw[k] = v
         # Resolution 字串 → Enum
         if "resolution" in s_kw and isinstance(s_kw["resolution"], str):
             s_kw["resolution"] = Resolution.from_value(s_kw["resolution"])
@@ -156,4 +174,5 @@ class CaptureSettings:
         object.__setattr__(inst, "screenshot", ScreenshotSettings(**s_kw))
         object.__setattr__(inst, "export", ExportSettings(**e_kw))
         object.__setattr__(inst, "gps", GpsDisplaySettings(**g_kw))
+        object.__setattr__(inst, "speed", SpeedSettings(**sp_kw))
         return inst

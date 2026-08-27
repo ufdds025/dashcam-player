@@ -50,6 +50,8 @@ class GPSPoint:
     time: float  # 相對於影片開始的秒數
     altitude: float | None = None
     speed: float | None = None
+    hdop: float | None = None
+    satellites: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -58,6 +60,8 @@ class GPSPoint:
             "time": self.time,
             "altitude": self.altitude,
             "speed": self.speed,
+            "hdop": self.hdop,
+            "satellites": self.satellites,
         }
 
 
@@ -653,7 +657,12 @@ class GPSParser:
                     lon = -lon
 
                 alt = float(parts[9]) if parts[9] else None
-                return GPSPoint(lat=lat, lon=lon, time=0.0, altitude=alt)
+                
+                # GGA sentence: parts[7] = satellites, parts[8] = HDOP
+                satellites = int(parts[7]) if parts[7] else None
+                hdop = float(parts[8]) if parts[8] else None
+                
+                return GPSPoint(lat=lat, lon=lon, time=0.0, altitude=alt, hdop=hdop, satellites=satellites)
 
             elif line.startswith(("$GPRMC", "$GNRMC")) and len(parts) >= 13:
                 if parts[2] != "A":
