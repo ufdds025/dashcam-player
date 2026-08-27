@@ -51,7 +51,8 @@ from dashcam_player.ui.widgets.encoder_fields import (
 
 if TYPE_CHECKING:
     from dashcam_player.models.capture_settings import CaptureSettings
-from dashcam_player.utils.cv_utils import frame_to_qimage, overlay_speed_text, overlay_detection_debug
+from dashcam_player.utils.cv_utils import frame_to_qimage, overlay_speed_text
+from dashcam_player.utils.vision_speed import overlay_detection_debug
 from dashcam_player.utils.log import get_log_path, get_logger
 from dashcam_player.utils.time_utils import format_time
 
