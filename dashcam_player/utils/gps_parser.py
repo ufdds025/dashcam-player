@@ -387,32 +387,40 @@ class GPSParser:
             sample_frames = sample_frame_indices(total_frames, fps)
 
             log.info(f"OCR 偵測：取樣 {len(sample_frames)} 幀 (frames {sample_frames})")
+            log.info(f"OCR 偵測：影片解析度 {w}x{h}, 格式 {fmt}")
             ocr = GPSOCR()
             for idx in sample_frames:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ret, frame = cap.read()
                 if not ret or frame is None:
+                    log.warning(f"OCR 偵測：無法讀取幀 {idx}")
                     continue
 
                 if roi_setting:
+                    log.info(f"OCR 偵測：使用已知 ROI ({roi_setting.roi_x:.3f}, {roi_setting.roi_y:.3f}, {roi_setting.roi_w:.3f}, {roi_setting.roi_h:.3f})")
                     roi = (
                         roi_setting.roi_x, roi_setting.roi_y,
                         roi_setting.roi_w, roi_setting.roi_h,
                     )
                     coord = ocr.ocr_frame(frame, roi=roi)
                     if coord is None:
-                        # ROI 失敗 → 全畫面重試（雙重策略），
-                        # 成功則後續提取改用全畫面（_ocr_roi=None）
+                        log.info(f"OCR 偵測：ROI 失敗，全畫面重試")
                         coord = ocr.ocr_frame(frame)
                         if coord is not None:
+                            log.info(f"OCR 偵測：全畫面成功，後續改用全畫面")
                             self._ocr_roi = None
+                    else:
+                        log.info(f"OCR 偵測：ROI 成功")
                 else:
+                    log.info(f"OCR 偵測：無已知 ROI，全畫面掃描")
                     coord = ocr.ocr_frame(frame)
 
                 if coord is not None:
-                    log.info(f"OCR 偵測到 GPS (frame {idx}): {coord[0]}, {coord[1]}")
+                    log.info(f"OCR 偵測到 GPS (frame {idx}): lat={coord[0]}, lon={coord[1]}")
                     self._ocr = ocr
                     return True
+                else:
+                    log.info(f"OCR 偵測：幀 {idx} 未偵測到 GPS 座標")
 
             # 步驟 3: 無已知 ROI 且取樣失敗 → 嘗試自動偵測
             if roi_setting is None and w > 0 and h > 0:

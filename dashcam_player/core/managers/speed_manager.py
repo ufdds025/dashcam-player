@@ -43,6 +43,12 @@ class SpeedManager(QObject):
         # 校正狀態
         self._calibration_profile = None
         self._current_track = None
+
+        # 除錯資訊（最新一幀的偵測結果）
+        self._debug_roi = None  # (x1, y1, x2, y2)
+        self._debug_periods: list[float] = []
+        self._debug_speed_kmh: float | None = None
+        self._debug_confidence: float = 0.0
         
     def set_app_settings(self, settings: AppSettings) -> None:
         self._app_settings = settings
@@ -199,6 +205,28 @@ class SpeedManager(QObject):
     @property
     def current_track(self):
         return self._current_track
+
+    def get_detection_debug(self) -> dict:
+        """取得最新偵測除錯資訊，供 VideoPlayer 疊加畫面"""
+        return {
+            "roi": self._debug_roi,
+            "periods": self._debug_periods,
+            "speed_kmh": self._debug_speed_kmh,
+            "confidence": self._debug_confidence,
+        }
+
+    def update_detection_debug(
+        self,
+        roi: tuple[int, int, int, int] | None = None,
+        periods: list[float] | None = None,
+        speed_kmh: float | None = None,
+        confidence: float = 0.0,
+    ) -> None:
+        """更新偵測除錯資訊"""
+        self._debug_roi = roi
+        self._debug_periods = periods or []
+        self._debug_speed_kmh = speed_kmh
+        self._debug_confidence = confidence
 
     def close(self) -> None:
         """關閉並釋放資源"""

@@ -250,6 +250,10 @@ class Controller(QObject):
         """取得當前幀的視覺測速結果 (km/h, source)"""
         return self._speed.get_current_speed(frame_idx, self.fps)
 
+    def get_detection_debug(self) -> dict:
+        """取得視覺測速偵測除錯資訊"""
+        return self._speed.get_detection_debug()
+
     def start_speed_scan(self) -> None:
         """啟動視覺測速掃描"""
         self._speed.start_scan()

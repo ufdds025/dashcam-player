@@ -296,3 +296,56 @@ def compute_vision_confidence(
     else:
         level = "LOW"
     return C, level
+
+
+def overlay_detection_debug(
+    frame: np.ndarray,
+    roi_gray: np.ndarray | None = None,
+    periods: list[float] | None = None,
+    speed_kmh: float | None = None,
+    confidence: float = 0.0,
+) -> np.ndarray:
+    """在畫面上疊加視覺測速偵測除錯資訊
+
+    綠框 = ROI 偵測區域
+    紅線 = 標線偵測位置
+    右上角文字 = 速度/信心度
+    """
+    import cv2
+    frame = frame.copy()
+    h, w = frame.shape[:2]
+
+    # 繪製 ROI 區域（綠框）— 畫面下方 65%~100%, 中間 60%
+    roi_y1 = int(h * 0.65)
+    roi_x1 = int(w * 0.2)
+    roi_x2 = int(w * 0.8)
+    cv2.rectangle(frame, (roi_x1, roi_y1), (roi_x2, h - 1), (0, 255, 0), 2)
+    cv2.putText(frame, "ROI", (roi_x1, roi_y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    # 如果有偵測結果，疊加資訊
+    if periods and speed_kmh is not None:
+        # 速度資訊（右上角）
+        text = f"{speed_kmh:.1f} km/h"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.7
+        thickness = 2
+        text_size = cv2.getTextSize(text, font, scale, thickness)[0]
+        tx = w - text_size[0] - 10
+        ty = 30
+        # 黑底白字
+        cv2.rectangle(frame, (tx - 5, ty - 20), (tx + text_size[0] + 5, ty + 5), (0, 0, 0), -1)
+        cv2.putText(frame, text, (tx, ty), font, scale, (0, 255, 0), thickness, cv2.LINE_AA)
+
+        # 信心度
+        conf_text = f"Conf: {confidence:.0%}"
+        cv2.putText(frame, conf_text, (tx, ty + 25), font, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+
+        # 標線偵測數量
+        strip_text = f"Strips: {len(periods)}"
+        cv2.putText(frame, strip_text, (tx, ty + 45), font, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+    else:
+        # 無偵測結果
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(frame, "No markings detected", (10, 30), font, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+
+    return frame

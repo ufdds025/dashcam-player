@@ -32,21 +32,32 @@ class _GPSLoadThread(QThread):
         if self._stop:
             return
         # 步驟 1: 快速檢查外部檔案 + embedded metadata
+        self.parser._emit_status = lambda msg: self.result_ready.emit(
+            self.parser.video_path, False, 0, []
+        ) if False else None  # placeholder
         has_gps = self.parser.has_gps_data()
         if self._stop:
             return
         # 步驟 2: 若無外部 GPS，用單幀輕量探測 OCR
         #         不可直接呼叫 extract_gps_tracks()，否則會觸發全片掃描
         if not has_gps:
+            log.info("GPS 偵測：無外部檔案/embedded metadata，開始 OCR 探測...")
             has_gps = self.parser.has_ocr_gps()
-            if self._stop:
-                return
+            if has_gps:
+                log.info("GPS 偵測：OCR 探測成功，找到 GPS 資料")
+            else:
+                log.info("GPS 偵測：OCR 探測失敗，未找到 GPS 資料")
+        else:
+            log.info("GPS 偵測：找到外部檔案/embedded metadata GPS")
+        if self._stop:
+            return
         # 步驟 3: 確認有 GPS 才做全片提取
         track_count = 0
         tracks: list[GPSPoint] = []
         if has_gps:
             tracks = self.parser.extract_gps_tracks()
             track_count = len(tracks)
+            log.info(f"GPS 偵測：全片提取完成，{track_count} 個軌跡點")
         if self._stop:
             return
         self.result_ready.emit(self.parser.video_path, has_gps, track_count, tracks)
@@ -100,6 +111,7 @@ class GPSManager(QObject):
         self._load_thread = _GPSLoadThread(self._parser, parent=self)
         self._load_thread.result_ready.connect(self._on_load_finished)
         self._load_thread.start()
+        log.info(f"GPS 背景載入啟動: run_ocr={run_ocr}")
 
     def start_ocr_detection(self) -> None:
         """在已有 GPSManager 的情況下，額外跑 OCR 探測。

@@ -51,7 +51,7 @@ from dashcam_player.ui.widgets.encoder_fields import (
 
 if TYPE_CHECKING:
     from dashcam_player.models.capture_settings import CaptureSettings
-from dashcam_player.utils.cv_utils import frame_to_qimage, overlay_speed_text
+from dashcam_player.utils.cv_utils import frame_to_qimage, overlay_speed_text, overlay_detection_debug
 from dashcam_player.utils.log import get_log_path, get_logger
 from dashcam_player.utils.time_utils import format_time
 
@@ -630,6 +630,17 @@ class VideoPlayer(QMainWindow):
         # 疊加速度文字
         if self._show_speed_overlay and self._current_speed_kmh is not None and self._current_speed_kmh > 0:
             frame_bgr = overlay_speed_text(frame_bgr, self._current_speed_kmh)
+
+        # 疊加偵測除錯資訊（綠框 + 紅線）
+        if self._show_speed_overlay and self.settings.speed.enabled if self.settings.speed else False:
+            debug = self.ctrl.get_detection_debug()
+            if debug and debug.get("periods"):
+                frame_bgr = overlay_detection_debug(
+                    frame_bgr,
+                    periods=debug.get("periods"),
+                    speed_kmh=debug.get("speed_kmh"),
+                    confidence=debug.get("confidence", 0.0),
+                )
 
         qimg = frame_to_qimage(frame_bgr)
         if qimg is None:
