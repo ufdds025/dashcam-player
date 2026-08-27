@@ -259,7 +259,7 @@ class VideoWorker(QThread):
                 self.cap.release()
                 self.cap = None
 
-def _run_loop(self) -> None:
+    def _run_loop(self) -> None:
         if self.cap is None:  # run() 必已賦值；此守衛同時供型別窄化
             return
         if not self.cap.isOpened():
