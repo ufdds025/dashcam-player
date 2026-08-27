@@ -45,7 +45,12 @@ class OutputSettingsDialog(QDialog):
         layout.addWidget(QLabel("輸出解析度:"), row, 0)
         self.res_combo = QComboBox()
         self.res_combo.addItems(Resolution.values())
-        idx = max(0, self.res_combo.findText(settings.resolution.value))
+        res_val = settings.resolution
+        if isinstance(res_val, Resolution):
+            res_str = res_val.value
+        else:
+            res_str = str(res_val)
+        idx = max(0, self.res_combo.findText(res_str))
         self.res_combo.setCurrentIndex(idx)
         layout.addWidget(self.res_combo, row, 1)
 

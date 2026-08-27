@@ -185,10 +185,10 @@ class GPSSettingsDialog(QDialog):
             google_maps_api_key=self.api_key_edit.text().strip(),
             gps_filter_enabled=self.filter_check.isChecked(),
             gps_filter_max_distance=self.max_dist_spin.value(),
-            speed_enabled=self.speed_enabled_check.isChecked(),
-            speed_distance_per_cycle=self.speed_distance_spin.value(),
-            speed_smoothing_window=self.speed_smooth_spin.value(),
-            speed_burn_speed_on_export=self.speed_burn_check.isChecked(),
+            enabled=self.speed_enabled_check.isChecked(),
+            distance_per_cycle=self.speed_distance_spin.value(),
+            smoothing_window=self.speed_smooth_spin.value(),
+            burn_speed_on_export=self.speed_burn_check.isChecked(),
         )
         self.accept()
 

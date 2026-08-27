@@ -99,7 +99,7 @@ class PlaybackControls(QWidget):
         # 視覺測速顯示
         self.speed_label = QLabel("-- km/h")
         self.speed_label.setFont(QFont("Consolas", 9, QFont.Bold))
-        self.speed_label.setStyleSheet("color: #0ff; padding-left: 6px;")
+        self.speed_label.setStyleSheet("color: #000; padding-left: 6px;")
         self.speed_label.setFixedWidth(80)
         layout.addWidget(self.speed_label)
 

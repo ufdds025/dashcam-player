@@ -218,8 +218,10 @@ class VideoPlayer(QMainWindow):
         right_layout.addWidget(QLabel("輸出解析度:"), 0, 2)
         self.res_combo = QComboBox()
         self.res_combo.addItems(Resolution.values())
+        _res_val = self.settings.resolution
+        _res_str = _res_val.value if isinstance(_res_val, Resolution) else str(_res_val)
         self.res_combo.setCurrentIndex(
-            max(0, self.res_combo.findText(self.settings.resolution.value))
+            max(0, self.res_combo.findText(_res_str))
         )
         self.res_combo.setEnabled(False)
         right_layout.addWidget(self.res_combo, 0, 3)

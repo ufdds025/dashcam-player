@@ -35,9 +35,9 @@ class _GPSLoadThread(QThread):
         has_gps = self.parser.has_gps_data()
         if self._stop:
             return
-        # 步驟 2: 若無外部 GPS 且 skip_ocr=True，用單幀輕量探測 OCR
+        # 步驟 2: 若無外部 GPS，用單幀輕量探測 OCR
         #         不可直接呼叫 extract_gps_tracks()，否則會觸發全片掃描
-        if not has_gps and getattr(self.parser, "_skip_ocr", False):
+        if not has_gps:
             has_gps = self.parser.has_ocr_gps()
             if self._stop:
                 return
@@ -160,8 +160,8 @@ class GPSManager(QObject):
             return self._tracks
         # 快速檢查外部檔案 + embedded metadata
         has_gps = self._parser.has_gps_data()
-        # 若無外部 GPS 且 skip_ocr=True，用單幀輕量探測
-        if not has_gps and getattr(self._parser, "_skip_ocr", False):
+        # 若無外部 GPS，用單幀輕量探測
+        if not has_gps:
             has_gps = self._parser.has_ocr_gps()
         # 確認有 GPS 才做全片提取
         if has_gps:
