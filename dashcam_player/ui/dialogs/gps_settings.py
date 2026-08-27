@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -11,6 +12,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -74,6 +76,48 @@ class GPSSettingsDialog(QDialog):
 
         layout.addSpacing(8)
 
+        speed_group = QGroupBox("視覺測速")
+        speed_layout = QVBoxLayout(speed_group)
+
+        self.speed_enabled_check = QCheckBox("啟動視覺測速（地面標線偵測）")
+        self.speed_enabled_check.setChecked(settings.speed.enabled)
+        self.speed_enabled_check.setToolTip("使用光流法偵測地面標線移动速度")
+        speed_layout.addWidget(self.speed_enabled_check)
+
+        dist_layout2 = QHBoxLayout()
+        dist_layout2.addWidget(QLabel("每次掃描距離:"))
+        self.speed_distance_spin = QDoubleSpinBox()
+        self.speed_distance_spin.setRange(1.0, 100.0)
+        self.speed_distance_spin.setDecimals(1)
+        self.speed_distance_spin.setSingleStep(5.0)
+        self.speed_distance_spin.setValue(settings.speed.distance_per_cycle)
+        self.speed_distance_spin.setSuffix(" m")
+        self.speed_distance_spin.setEnabled(settings.speed.enabled)
+        dist_layout2.addWidget(self.speed_distance_spin)
+        dist_layout2.addStretch()
+        speed_layout.addLayout(dist_layout2)
+
+        smooth_layout = QHBoxLayout()
+        smooth_layout.addWidget(QLabel("平滑窗口:"))
+        self.speed_smooth_spin = QSpinBox()
+        self.speed_smooth_spin.setRange(1, 30)
+        self.speed_smooth_spin.setValue(settings.speed.smoothing_window)
+        self.speed_smooth_spin.setEnabled(settings.speed.enabled)
+        smooth_layout.addWidget(self.speed_smooth_spin)
+        smooth_layout.addStretch()
+        speed_layout.addLayout(smooth_layout)
+
+        self.speed_burn_check = QCheckBox("匯出時燒入速度文字")
+        self.speed_burn_check.setChecked(settings.speed.burn_speed_on_export)
+        self.speed_burn_check.setEnabled(settings.speed.enabled)
+        speed_layout.addWidget(self.speed_burn_check)
+
+        self.speed_enabled_check.toggled.connect(self._on_speed_toggle)
+
+        layout.addWidget(speed_group)
+
+        layout.addSpacing(8)
+
         map_group = QGroupBox("地圖來源")
         map_layout = QVBoxLayout(map_group)
 
@@ -124,6 +168,11 @@ class GPSSettingsDialog(QDialog):
     def _on_filter_toggle(self, checked: bool) -> None:
         self.max_dist_spin.setEnabled(checked)
 
+    def _on_speed_toggle(self, checked: bool) -> None:
+        self.speed_distance_spin.setEnabled(checked)
+        self.speed_smooth_spin.setEnabled(checked)
+        self.speed_burn_check.setEnabled(checked)
+
     def _toggle_api_key_visible(self, checked: bool) -> None:
         self.api_key_edit.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
         self._show_key_btn.setText("隱藏" if checked else "顯示")
@@ -136,6 +185,10 @@ class GPSSettingsDialog(QDialog):
             google_maps_api_key=self.api_key_edit.text().strip(),
             gps_filter_enabled=self.filter_check.isChecked(),
             gps_filter_max_distance=self.max_dist_spin.value(),
+            speed_enabled=self.speed_enabled_check.isChecked(),
+            speed_distance_per_cycle=self.speed_distance_spin.value(),
+            speed_smoothing_window=self.speed_smooth_spin.value(),
+            speed_burn_speed_on_export=self.speed_burn_check.isChecked(),
         )
         self.accept()
 

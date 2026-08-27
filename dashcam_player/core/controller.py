@@ -246,6 +246,18 @@ class Controller(QObject):
     def speed_settings(self) -> SpeedSettings:
         return self._speed.speed_settings
 
+    def get_current_speed(self, frame_idx: int) -> tuple[float | None, str]:
+        """取得當前幀的視覺測速結果 (km/h, source)"""
+        return self._speed.get_current_speed(frame_idx, self.fps)
+
+    def start_speed_scan(self) -> None:
+        """啟動視覺測速掃描"""
+        self._speed.start_scan()
+
+    def stop_speed_scan(self) -> None:
+        """停止視覺測速掃描"""
+        self._speed.stop_scan()
+
     @property
     def has_roi_setting(self) -> bool:
         return self._gps.has_roi_setting

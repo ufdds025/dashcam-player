@@ -26,6 +26,7 @@ class SpeedManager(QObject):
     
     speed_updated = pyqtSignal(float, float, str, str)   # (time, speed_kmh, confidence_level, source)
     speed_ready = pyqtSignal(str, object)                # (video_path, SpeedTrack)
+    error_occurred = pyqtSignal(str, str)                # (title, message)
     status_message = pyqtSignal(str)
     
     def __init__(self, parent: QObject | None = None) -> None:
@@ -41,6 +42,7 @@ class SpeedManager(QObject):
         
         # 校正狀態
         self._calibration_profile = None
+        self._current_track = None
         
     def set_app_settings(self, settings: AppSettings) -> None:
         self._app_settings = settings
@@ -118,6 +120,7 @@ class SpeedManager(QObject):
     def _on_speed_ready(self, track) -> None:
         """掃描完成"""
         log.info(f"速度掃描完成: {track.status}, {len(track.points)} points")
+        self._current_track = track
         self.speed_ready.emit(self._video_path, track)
         self._worker = None
         self._scheduler = None
@@ -156,21 +159,50 @@ class SpeedManager(QObject):
     
     def get_current_speed(self, frame_idx: int, fps: float) -> tuple[float | None, str]:
         """取得當前幀的速度 (km/h) + 來源
-        
+
         Returns: (speed_kmh, source) 或 (None, "")
         """
-        # 待實作：從 SpeedTrack 插值
-        return None, ""
-    
+        if not self._current_track or not self._current_track.points:
+            return None, ""
+        # 從 frame_idx 計算時間，線性插值
+        sec = frame_idx / fps if fps > 0 else 0.0
+        points = self._current_track.points
+        # 小於第一點或大於最後一點
+        if sec <= points[0].time:
+            return self._to_kmh(points[0].fused or points[0].corrected), points[0].source
+        if sec >= points[-1].time:
+            return self._to_kmh(points[-1].fused or points[-1].corrected), points[-1].source
+        # 二分搜尋找區間
+        lo, hi = 0, len(points) - 1
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            if points[mid].time <= sec:
+                lo = mid
+            else:
+                hi = mid
+        p0, p1 = points[lo], points[hi]
+        dt = p1.time - p0.time
+        if dt <= 0:
+            return self._to_kmh(p0.fused or p0.corrected), p0.source
+        t = (sec - p0.time) / dt
+        v0 = p0.fused or p0.corrected or 0.0
+        v1 = p1.fused or p1.corrected or 0.0
+        speed_ms = v0 + t * (v1 - v0)
+        return self._to_kmh(speed_ms), p0.source
+
+    @staticmethod
+    def _to_kmh(speed_ms: float | None) -> float | None:
+        if speed_ms is None:
+            return None
+        return speed_ms * 3.6
+
+    @property
+    def current_track(self):
+        return self._current_track
+
     def close(self) -> None:
         """關閉並釋放資源"""
         if self._closed:
             return
         self._closed = True
         self.stop_scan()
-    
-    # 為了相容 Controller 的 error_occurred 連接
-    error_occurred = pyqtSignal(str, str)
-    speed_updated = pyqtSignal(float, float, str, str)  # time, speed_kmh, level, source
-    speed_ready = pyqtSignal(str, object)
-    status_message = pyqtSignal(str)

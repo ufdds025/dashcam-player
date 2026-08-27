@@ -51,7 +51,7 @@ from dashcam_player.ui.widgets.encoder_fields import (
 
 if TYPE_CHECKING:
     from dashcam_player.models.capture_settings import CaptureSettings
-from dashcam_player.utils.cv_utils import frame_to_qimage
+from dashcam_player.utils.cv_utils import frame_to_qimage, overlay_speed_text
 from dashcam_player.utils.log import get_log_path, get_logger
 from dashcam_player.utils.time_utils import format_time
 
@@ -80,6 +80,8 @@ class VideoPlayer(QMainWindow):
 
         # GPS / 地圖
         self._has_gps: bool = False
+        self._current_speed_kmh: float | None = None
+        self._show_speed_overlay: bool = True
         self.map_view: MapView | None = None  # 在 _init_ui 建立
 
         # 設定 debounce 儲存
@@ -438,6 +440,17 @@ class VideoPlayer(QMainWindow):
         # 初始狀態：無 GPS 時停用
         self._update_gps_menu_state(has_gps=False)
 
+        speed_menu = menubar.addMenu("測速")
+        self._speed_toggle_action = speed_menu.addAction("啟動視覺測速")
+        self._speed_toggle_action.setCheckable(True)
+        self._speed_toggle_action.setChecked(self.settings.speed.enabled if self.settings.speed else False)
+        self._speed_toggle_action.triggered.connect(self._toggle_speed_scan)
+
+        self._speed_overlay_action = speed_menu.addAction("畫面顯示速度")
+        self._speed_overlay_action.setCheckable(True)
+        self._speed_overlay_action.setChecked(True)
+        self._speed_overlay_action.triggered.connect(self._toggle_speed_overlay)
+
         help_menu = menubar.addMenu("說明")
         help_menu.addAction("檢視除錯日誌", self._show_log, QKeySequence("Ctrl+L"))
 
@@ -458,6 +471,8 @@ class VideoPlayer(QMainWindow):
         self.ctrl.export_finished.connect(self._on_export_finished)
         self.ctrl.gps_position_updated.connect(self._on_gps_position_updated)
         self.ctrl.gps_ready.connect(self._on_gps_ready)
+        self.ctrl.speed_ready.connect(self._on_speed_ready)
+        self.ctrl.speed_updated.connect(self._on_speed_updated)
 
     # =========================================================================
     # 設定儲存/還原
@@ -522,6 +537,9 @@ class VideoPlayer(QMainWindow):
         self._has_gps = False
         self._update_gps_menu_state(False)
         self._hide_gps_map()
+        # Speed 狀態重設
+        self._current_speed_kmh = None
+        self.controls.speed_label.setText("-- km/h")
 
     def _on_frame_ready(self, frame, idx: int) -> None:
         if self.ctrl.is_playing:
@@ -564,6 +582,14 @@ class VideoPlayer(QMainWindow):
         self._update_time_display(sec)
         if self.ctrl.total_frames > 0 and not self.timeline.isSliderDown():
             self.timeline.setValue(frame_idx)
+        # 查詢視覺測速
+        speed_kmh, source = self.ctrl.get_current_speed(frame_idx)
+        if speed_kmh is not None and speed_kmh > 0:
+            self.controls.speed_label.setText(f"{speed_kmh:.1f} km/h")
+            self._current_speed_kmh = speed_kmh
+        else:
+            self.controls.speed_label.setText("-- km/h")
+            self._current_speed_kmh = None
 
     def _on_load_failed(self, msg: str) -> None:
         if self.isVisible():
@@ -598,6 +624,10 @@ class VideoPlayer(QMainWindow):
             if rect:
                 x, y, w, h = rect
                 frame_bgr = frame_bgr[y : y + h, x : x + w].copy()
+
+        # 疊加速度文字
+        if self._show_speed_overlay and self._current_speed_kmh is not None and self._current_speed_kmh > 0:
+            frame_bgr = overlay_speed_text(frame_bgr, self._current_speed_kmh)
 
         qimg = frame_to_qimage(frame_bgr)
         if qimg is None:
@@ -897,6 +927,18 @@ class VideoPlayer(QMainWindow):
         else:
             self.statusBar().showMessage(f"就緒  |  硬體加速: {hw_str}  |  GPS: 無")
 
+    def _on_speed_ready(self, video_path: str, track) -> None:
+        """速度掃描完成"""
+        point_count = len(track.points) if track else 0
+        self.statusBar().showMessage(f"速度掃描完成: {point_count} 個點, {track.status}")
+
+    def _on_speed_updated(self, time_sec: float, speed_kmh: float, confidence: str, source: str) -> None:
+        """速度更新（來自 SpeedManager）"""
+        if speed_kmh > 0:
+            self.controls.speed_label.setText(f"{speed_kmh:.1f} km/h")
+        else:
+            self.controls.speed_label.setText("-- km/h")
+
     def _toggle_gps_map(self, checked: bool) -> None:
         """開關 GPS 地圖顯示"""
         self.settings.show_gps_map = checked
@@ -913,6 +955,21 @@ class VideoPlayer(QMainWindow):
         """開關跳過照片 GPS 疊加"""
         self.settings.skip_gps_overlay = checked
         self._schedule_save()
+
+    def _toggle_speed_scan(self, checked: bool) -> None:
+        """開關視覺測速掃描"""
+        self.settings.speed.enabled = checked
+        self._schedule_save()
+        if checked:
+            self.ctrl.start_speed_scan()
+        else:
+            self.ctrl.stop_speed_scan()
+            self.controls.speed_label.setText("-- km/h")
+            self._current_speed_kmh = None
+
+    def _toggle_speed_overlay(self, checked: bool) -> None:
+        """開關畫面速度疊加"""
+        self._show_speed_overlay = checked
 
     def _show_gps_map(self) -> None:
         """顯示 GPS 地圖並載入軌跡"""

@@ -202,6 +202,22 @@ def overlay_gps_text(frame: np.ndarray, gps_coord: tuple) -> np.ndarray:
     return frame
 
 
+def overlay_speed_text(frame: np.ndarray, speed_kmh: float, confidence: float = 0.0) -> np.ndarray:
+    """在畫面右下角疊加速度文字（白字黑框）"""
+    frame = frame.copy()
+    text = f"{speed_kmh:.1f} km/h"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.7
+    thickness = 2
+    h, w = frame.shape[:2]
+    text_size = cv2.getTextSize(text, font, scale, thickness)[0]
+    tx = w - text_size[0] - 10
+    ty = h - 15
+    cv2.putText(frame, text, (tx, ty), font, scale, (255, 255, 255), thickness + 1, cv2.LINE_AA)
+    cv2.putText(frame, text, (tx, ty), font, scale, (0, 0, 0), thickness, cv2.LINE_AA)
+    return frame
+
+
 def overlay_osm_thumbnail(frame: np.ndarray, osm_bytes: bytes, thumb_size: int = 160) -> np.ndarray:
     try:
         arr = np.frombuffer(osm_bytes, dtype=np.uint8)
