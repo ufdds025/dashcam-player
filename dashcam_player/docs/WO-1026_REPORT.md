@@ -302,3 +302,63 @@ Success: no issues found in 82 source files
 - [x] GPS 速度不再出現「實驗」標記；視覺速度仍有
 - [x] `get_current_speed` 為 GPS 優先，且有 3 項測試
 - [x] passed 數量前後自洽
+
+---
+
+## WO-1026c 掃描中速度訊號小修
+
+### 問題
+`core/speed_worker.py:504`、`:555` 背景掃描中發出 `speed_updated(t, …, "vision")`，其中 `t` 是掃描進度時間，非當前播放畫面。
+WO-1026b R2 讓 `_on_speed_updated` 更新 `_current_speed_kmh`/`_current_speed_source` 並改標籤，導致：
+1. 掃描中畫面疊加速度變成「掃到哪一段的速度」，跟當前畫面無關。
+2. 有 GPS 的影片，狀態列與疊加被視覺速度暫時蓋掉——違反 R3「GPS 優先」。
+
+### 修正
+- `_on_speed_updated` **不再設定**速度標籤、`_current_speed_kmh`、`_current_speed_source`。
+- 僅在狀態列顯示掃描進度訊息（`視覺測速掃描中… t=12.3s (vision, 信心度=80%)`）。
+- 畫面速度一律由 `_on_position_updated`（播放時）與 `_on_speed_ready`（掃描完成後）透過 `ctrl.get_current_speed(frame_idx)` 取得（已含 GPS 優先）。
+
+### 改動檔案
+| 檔案 | 變更 |
+|------|------|
+| `core/video_player.py` | `_on_speed_updated`：移除對 `_current_speed_kmh`/`_current_speed_source`/`speed_label` 的寫入，改只呼叫 `statusBar().showMessage(...)` |
+| `tests/conftest.py` | 新增 `QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)` 支援 QtWebEngine 測試 |
+
+### 新增測試
+`test_controller.py::TestVideoPlayerSpeedUpdated::test_on_speed_updated_does_not_overwrite_current_speed`
+- 收到 `speed_updated(12.3, 45.0, 0.8, "vision")` 後，`_current_speed_kmh` 與 `speed_label` 文字**不變**（保持 GPS 60.0 km/h）。
+- 狀態列顯示掃描進度訊息。
+
+### 驗收
+```powershell
+$ python -m pytest dashcam_player/tests/ -q
+359 passed, 2 skipped
+$ ruff check dashcam_player/
+All checks passed!
+$ python -m mypy dashcam_player/ --ignore-missing-imports
+Success: no issues found in 82 source files
+```
+
+### 乾淨 clone 驗收
+```powershell
+$ git clone --branch freeze/vision-speed . "$env:TEMP\wo1026c_final"
+$ cd "$env:TEMP\wo1026c_final"
+$ python -m pytest dashcam_player/tests/ -q
+353 passed, 7 skipped
+$ ruff check dashcam_player/
+All checks passed!
+$ python -m mypy dashcam_player/ --ignore-missing-imports
+Success: no issues found in 82 source files
+```
+
+### git log --oneline（本分支，含 WO-1026c）
+```
+<WO-1026c commits>
+[WO-1026c] 修正掃描中 speed_updated 不覆蓋畫面速度：_on_speed_updated 僅顯示進度、新增測試
+[WO-1026b R5] 回報：WO-1026b 審查退件修正總結
+[WO-1026b R4] 補 T1 遺漏測試：SpeedSettings.enabled 預設 False 與舊存檔回讀
+[WO-1026b R3] 速度顯示改 GPS 優先：get_current_speed 先查 GPS 再回退視覺
+[WO-1026b R2] 修正「實驗」標示只標視覺速度：format_speed_label 純函式＋單測
+[WO-1026b R1] 補提交 2026-08-27 起未提交的既有工作
+...（其餘同 WO-1026/1026b）
+```
