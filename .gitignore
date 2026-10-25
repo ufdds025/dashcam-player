@@ -10,3 +10,12 @@ build/
 .opencode/
 *.log
 captures/
+NUL
+# 私人行車記錄器樣本（本機端保留，不納入版本控制）
+*.AVI
+*.avi
+*_annotations.json
+CH13_*.avi
+CH13_*.mp4
+PIC2026*.AVI
+# 2026-09-01 統一 CRLF→LF 後的中文檔名幽靈 untracked 已處理，見 .gitattributes
