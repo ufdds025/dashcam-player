@@ -273,19 +273,20 @@ class Controller(QObject):
     def get_current_speed(self, frame_idx: int) -> tuple[float | None, str]:
         """取得當前幀的測速結果 (km/h, source)
 
-        優先回傳視覺測速；若視覺無結果（掃描未完成/無標線）則備援 GPS 速度，
-        確保「GPS 已載入但速度仍為 --」的情況能顯示 GPS 速度。
+        優先回傳 GPS 速度；若 GPS 無結果則備援視覺測速，
+        確保「有 GPS 時以 GPS 為準」的顯示策略。
         """
-        vision_speed, source = self._speed.get_current_speed(frame_idx, self.fps)
-        if vision_speed is not None and vision_speed > 0:
-            return vision_speed, source
-        # 備援：GPS 速度（NMEA 節轉 km/h，已在 GPSManager 處理）
+        # 優先：GPS 速度（NMEA 節轉 km/h，已在 GPSManager 處理）
         try:
             gps_speed = self._gps.get_current_speed(frame_idx, self.fps)
             if gps_speed is not None and gps_speed > 0:
                 return gps_speed, "gps"
         except Exception:
             pass
+        # 備援：視覺測速
+        vision_speed, source = self._speed.get_current_speed(frame_idx, self.fps)
+        if vision_speed is not None and vision_speed > 0:
+            return vision_speed, source
         # 若 vision 有值但為 0，仍回傳 vision 以避免 GPS 0 覆蓋
         return vision_speed, source
 

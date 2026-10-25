@@ -349,3 +349,61 @@ class TestSignalRelayChain:
         ctrl._gps.set_video_context("a.mp4", None)
         mgr.gps_loaded.emit("a.mp4", True, 5)
         assert received == [("a.mp4", True, 5)]
+
+
+class TestGetCurrentSpeedGPSPriority:
+    """get_current_speed 回傳 GPS 優先（R3 驗收）。"""
+
+    def _make_controller(self):
+        from unittest.mock import Mock
+
+        from dashcam_player.core.controller import Controller
+        from dashcam_player.models.video_info import VideoInfo
+
+        ctrl = Controller()
+        ctrl.video_info = VideoInfo(path="test.mp4", fps=30.0, frame_count=3000, duration=100.0)
+        ctrl._speed = Mock()
+        ctrl._gps = Mock()
+        return ctrl
+
+    def test_gps_priority_when_both_available(self, qapp):
+        """GPS 與視覺都有 → 回 GPS。"""
+        ctrl = self._make_controller()
+
+        # GPS 回傳有效速度，視覺也回傳有效速度
+        ctrl._gps.get_current_speed.return_value = 60.0
+        ctrl._speed.get_current_speed.return_value = (45.0, "vision")
+
+        speed, source = ctrl.get_current_speed(100)
+
+        assert speed == 60.0
+        assert source == "gps"
+        ctrl._gps.get_current_speed.assert_called_once_with(100, 30.0)
+        ctrl._speed.get_current_speed.assert_not_called()  # GPS 優先，不呼叫視覺
+
+    def test_vision_fallback_when_no_gps(self, qapp):
+        """只有視覺 → 回視覺且 source='vision'。"""
+        ctrl = self._make_controller()
+
+        # GPS 回傳 None，視覺回傳有效速度
+        ctrl._gps.get_current_speed.return_value = None
+        ctrl._speed.get_current_speed.return_value = (45.0, "vision")
+
+        speed, source = ctrl.get_current_speed(100)
+
+        assert speed == 45.0
+        assert source == "vision"
+        ctrl._gps.get_current_speed.assert_called_once_with(100, 30.0)
+        ctrl._speed.get_current_speed.assert_called_once_with(100, 30.0)
+
+    def test_both_none_returns_none(self, qapp):
+        """兩者皆無 → 回 (None, '')。"""
+        ctrl = self._make_controller()
+
+        ctrl._gps.get_current_speed.return_value = None
+        ctrl._speed.get_current_speed.return_value = (None, "")
+
+        speed, source = ctrl.get_current_speed(100)
+
+        assert speed is None
+        assert source == ""
