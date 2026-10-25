@@ -78,6 +78,12 @@ dashcam_player/                  # 含 __init__.py（regular package）
 │   ├── test_controller.py   # Controller 驗證方法 + 信號 relay 鏈測試 (23 項)
 │   └── test_performance.py  # 效能基準（1080p 解碼 FPS / JPEG 寫入），RUN_PERF_TESTS=1 才執行
 └── requirements.txt         # 實際位於 dashcam_player/（非根目錄）
+
+scripts/
+└── verify_pacing.py         # 播放節奏端對端驗證工具（非 pytest，手動執行）
+                              # 複製 video_worker.py 的排程邏輯，量測任意幀率/
+                              # 來源檔案的 wall-clock 是否等於真實長度，見下方
+                              # 「附帶驗證：排程邏輯是否幀率無關」章節
 ```
 
 ## 測試
@@ -142,6 +148,7 @@ python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
 - **⚠️ class method 缩进缺失**：`def` 行若缺少 class 層級的 4 空格缩进（落至 column 0），Python 會在下一個 dedent 行報 `IndentationError: unindent does not match any outer indentation level`。這通常由壞 merge 或手動編輯造成——`def __init__` 或其他 class method 的 `def` 行是column 0，但 method body 仍在 8 空格。修復方法：確保所有 class method 的 `def` 行有 4 空格缩进
 - **⚠️ QThread `run()` 不可因 EOF `break`**：`VideoWorker.run()` 播放到尾端（`cap.read()` 失敗）時**不可** `break` 跳出 while 迴圈，否則 worker 執行緒終止，後續所有 play/seek 指令進了 queue 卻無人消費，UI 完全卡死。正確做法是 `playing = False; continue`，保持迴圈存活等待下一個指令。同理，`BatchCaptureWorker.run()` 也用 `try/finally` 確保 `cap.release()` 而非提前 return
 - **批次截圖**：由 `BatchCaptureWorker` 在背景執行緒順序讀取，完全脫離主執行緒
+- **擷取檔名可溯性**：單張/批次統一由 `utils/filename_utils.build_capture_filename()` 產生 `{prefix}_{來源stem}_f{幀編號:06d}.{ext}`，**必須含來源影片名稱**（`source_stem(video_path)`）。檔名是 (來源, 幀) 的確定性函式——改命名格式前先評估是否破壞「不同來源不撞名 / 同來源同幀同名（防重複）」語意；批次 `batch_capture.py` 已對已存在同名檔跳過（不產生第二份副本）
 - **JPEG 品質**：由 `quality_spin`（QSpinBox, 1-100, 預設 95）控制
 - **解析度等比例縮放**：`cv_utils.apply_resolution()` 以 `min(target/src)` 計算 scale
 - **縮放 crop 後需 `.copy()`**：`_display_frame` 中 zoom crop 的 numpy slice 是 view（非連續記憶體），傳入 `QImage` 會噴 `TypeError`；需加 `.copy()` 保證連續性
@@ -150,6 +157,7 @@ python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
 - **signal 順序**：`video_worker.py` 中 `video_info_ready` 必須先於 `duration_ready` emit — 否則 `_on_duration_ready` 檢查 `self.video_info` 時仍為 `None`，`video_loaded` signal 永不觸發
 - **`duration` 儲存**：`_on_duration_ready` 需將傳入的 `sec` 寫入 `self.video_info.duration`，否則總時長永遠為 0
 - **shutdown**：務必呼叫 `_cancel_export()`（而非 `stop_export()`）以清除 `_export_params` 來阻止 retry worker 洩漏
+- **⚠️ PTS 修正不可重置 `next_deadline`**：`video_worker.py` 的 PTS 修正區塊（`pts_correction_pending`）中，`changed=True` 時**不可**設 `next_deadline = None`——此處重置與 `_pace_reset_requested` 機制雙重重疊，導致 PTS 修正瞬間時間錨點中斷。5fps 播放每秒一次的「額外停頓」即此根因。正確做法：僅保留 `_pace_reset_requested`（play/seek/step/speed-change 時重置），PTS 修正不再自行重置
 - **stop / wait**：所有 stop 方法在 `wait()` 前須 `try: disconnect()` 避免 callback 在 wait 期間觸發
 - **Logging**：使用標準 `logging` 模組搭配 `RotatingFileHandler`，日誌寫入 `tempfile.gettempdir() / dashcam_debug.log`
 
@@ -181,10 +189,12 @@ python -m mypy dashcam_player/ --ignore-missing-imports   # 0 errors expected
 - **OSM 快取鎖**：`osm_map.py` 使用 `_CACHE_LOCK = threading.Lock()` 保護 `_STATIC_MAP_MEMORY_CACHE` 存取，確保批次截圖與主執行緒並行時的執行緒安全
 - **批次截圖 OSM 縮圖**：`BatchCaptureWorker` 的 GPS 疊加也包含 OSM 靜態縮圖（與單張截圖一致），依賴 `get_static_map()` HTTP 請求
 - **`QSettings` 布林值**：`show_gps_map` / `skip_gps_overlay` 等布林設定從 QSettings 讀回時需手動轉換（字串 → bool）
-- **OCR fallback**：`GPSParser._has_ocr_gps()` 在外部檔案與內嵌 metadata 都失敗時，嘗試用 Tesseract 從畫面辨識 GPS 文字（`gps_ocr.py`）。OCR 偵測取樣 3 幀（0s/3s/6s），提取時每 1 秒取樣。`_extraction_attempted` flag 確保空結果被快取，避免重複掃描
-- **skip_ocr 優化**：`GPSParser(..., skip_ocr=True)` 在 `open_video` 中跳過 OCR 偵測，避免每次開啟影片都載入 Tesseract（需載入 tessdata）。OCR 僅在 `extract_gps_tracks()` 被明確呼叫且其他 GPS 來源都失敗時才執行。Controller 的 `open_video()` 傳入 `skip_ocr=True`
+- **OCR fallback**：`GPSParser._has_ocr_gps()` 在外部檔案與內嵌 metadata 都失敗時，嘗試用 PaddleOCR 從畫面辨識 GPS 文字（`gps_ocr.py`）。OCR 偵測取樣 3 幀（0s/3s/6s），提取時每 1 秒取樣。`_extraction_attempted` flag 確保空結果被快取，避免重複掃描
+- **skip_ocr 優化**：`GPSParser(..., skip_ocr=True)` 在 `open_video` 中跳過 OCR 偵測，避免每次開啟影片都載入 PaddleOCR 模型。OCR 僅在 `extract_gps_tracks()` 被明確呼叫且其他 GPS 來源都失敗時才執行。Controller 的 `open_video()` 傳入 `skip_ocr=True`
 - **`_tracks_loaded` 快取**：`GPSManager.extract_tracks_sync()` 檢查 `_tracks_loaded` flag，已載入時直接回傳 `_tracks`，避免重複 OCR 全片掃描
-- **OCR 準確度（實測）**：`gps_ocr.py.ocr_frame()` 的 ROI 裁切**先對外擴充邊距**（寬 5% / 高 15%），緊貼文字的 ROI 會裁到文字導致辨識失敗。`_recognize()` 多策略依序嘗試：**CLAHE 灰階直送**（Tesseract 內部自適應二值化，實測最準）→ Otsu 二值化 → Otsu 放大 2x/3x。⚠️ **不可對中大型文字預先放大**——實測 2x INTER_CUBIC 放大會把 `24.338535` 誤判成 `24.53585355`（3→5）；放大僅作為小字的**最後**備援
+- **`_has_speed_data` 快取**：`GPSManager` 的 `get_speed_at_time()` 每幀呼叫，內部 `_has_speed_data` flag（tracks 載入時一次計算）避免每幀 O(n) 掃描 `any(p.speed is not None for p in tracks)`
+- **PaddleOCR 整合**：`gps_ocr.py` 使用 PaddleOCR（Python API）取代 Tesseract（subprocess）。PaddleOCR 懶載入（`_get_paddle_ocr()`），使用 `ocr.predict(image)` 方法，結果從 `res["rec_texts"]` 取得。**不需前置處理**——PaddleOCR 內建自適應二值化，對白字黑邊文字辨識率 100%（Tesseract 為 0%）。參數：`use_textline_orientation=True, lang="en"`
+- **ROI 備援**：`GPSOCR.ocr_frame()` 先嘗試原始 ROI，失敗時自動右移 ROI 重試（`_shift_roi_right()`），避免文字被裁切
 - **ROI 失敗全畫面備援**：`_has_ocr_gps()` 中已知 ROI 辨識失敗時自動退回全畫面 OCR；若全畫面成功會把 `parser._ocr_roi` 設為 `None`，後續全片提取也走全畫面
 - **`_ocr_roi` 傳遞**：`GPSParser._ocr_roi` 記錄偵測階段使用的 ROI（已知設定或自動偵測結果），`GPSTrackExtractor._extract_from_ocr()` 將其傳入 `GPSOCR.extract_tracks(..., roi=...)`——**全片軌跡提取必須帶 ROI**，否則設定的偵測範圍無效
 - **GPS 訊號過濾**：`filter_gps_drift(points, max_distance_m)`（`gps_parser.py`）丟棄「與前一點距離超過門檻且前後兩點彼此接近」的飄移點（跳離軌跡又跳回原位），連續大跳躍（真實快速移動）保留；端點一律保留。由 `AppSettings.load_gps_filter()` 讀取 `capture/gps_filter_enabled` / `gps_filter_max_distance`，在 `GPSParser.extract_gps_tracks()` 提取完成時套用
@@ -243,3 +253,17 @@ pyinstaller --onefile --name DashcamPlayer --console ^
 - 不要搜尋 `_output_prefix`（已清理）
 - `numpy` 用於 `cv_utils.py`（型別標註 + OpenCV 操作）與 `gps_ocr.py`（影像預處理），其餘檔案不可新增 `import numpy`
 - `dashcam_player/__init__.py` 為空殼（僅 docstring），無 re-export。`core/__init__.py` 才有 re-export VideoWorker / ExportWorker / BatchCaptureWorker / Controller + 四個 Manager（但 `controller.py` 直接 import 個別模組而非經由 `__init__` 的 re-export）
+
+---
+
+> 📋 **完整維修測試紀錄已歸檔**：見 [`dashcam_player/docs/archive/MAINTENANCE_LOG.md`](dashcam_player/docs/archive/MAINTENANCE_LOG.md)
+
+---
+
+## 視覺測速狀態：🧊 已凍結（2026-10-26）
+
+- **決策**：停止投入標線測速的調參與擴充。程式碼與資料保留不刪，降級為預設關閉的實驗功能。
+- **核心原因**：Task C 驗收（前鏡頭 R≈0.00–0.08）、速度誤差大（+25%〜−45%）、一致性無法預測正確性、30fps 量化上限、投入產出比極低（多數素材已有 GPS）。
+- **禁止**：再調門檻 / 新增偵測方法，**除非**符合下列重啟條件之一。
+- **重啟條件**：① 取得真實 60fps 素材；② 有「無 GPS 必須測速」的明確需求且備好雙機同路段 gold 真值；③ 改用能取得距離尺度的方法（如已知相機高度的單目視覺里程計）。
+- **完整 postmortem**：[`dashcam_player/docs/VISION_SPEED_POSTMORTEM.md`](dashcam_player/docs/VISION_SPEED_POSTMORTEM.md)
