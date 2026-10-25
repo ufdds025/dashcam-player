@@ -3,7 +3,6 @@ from __future__ import annotations
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -76,12 +75,12 @@ class GPSSettingsDialog(QDialog):
 
         layout.addSpacing(8)
 
-        speed_group = QGroupBox("視覺測速")
+        speed_group = QGroupBox("視覺測速（實驗）")
         speed_layout = QVBoxLayout(speed_group)
 
         self.speed_enabled_check = QCheckBox("啟動視覺測速（地面標線偵測）")
         self.speed_enabled_check.setChecked(settings.speed.enabled)
-        self.speed_enabled_check.setToolTip("使用光流法偵測地面標線移动速度")
+        self.speed_enabled_check.setToolTip("依路面標線估速，準確度未驗證；有 GPS 時請以 GPS 為準")
         speed_layout.addWidget(self.speed_enabled_check)
 
         dist_layout2 = QHBoxLayout()

@@ -52,9 +52,9 @@ from dashcam_player.ui.widgets.encoder_fields import (
 if TYPE_CHECKING:
     from dashcam_player.models.capture_settings import CaptureSettings
 from dashcam_player.utils.cv_utils import frame_to_qimage, overlay_speed_text
-from dashcam_player.utils.vision_speed import overlay_detection_debug
 from dashcam_player.utils.log import get_log_path, get_logger
 from dashcam_player.utils.time_utils import format_time
+from dashcam_player.utils.vision_speed import overlay_detection_debug
 
 log = get_logger()
 
@@ -84,6 +84,12 @@ class VideoPlayer(QMainWindow):
         self._current_speed_kmh: float | None = None
         self._show_speed_overlay: bool = True
         self.map_view: MapView | None = None  # 在 _init_ui 建立
+
+        # 即時偵測除錯：每 N 幀偵測一次（降低 CPU 負擔）
+        self._debug_detect_interval: int = 10  # 每10幀偵測一次
+        self._debug_detect_counter: int = 0
+        self._debug_cached_speed: float | None = None
+        self._debug_cached_confidence: float = 0.0
 
         # 設定 debounce 儲存
         self._save_debounce = QTimer()
@@ -454,6 +460,12 @@ class VideoPlayer(QMainWindow):
         self._speed_overlay_action.setChecked(True)
         self._speed_overlay_action.triggered.connect(self._toggle_speed_overlay)
 
+        self._speed_roi_action = speed_menu.addAction("設定偵測區域...")
+        self._speed_roi_action.triggered.connect(self._open_speed_roi_dialog)
+
+        self._speed_calib_action = speed_menu.addAction("校準速度...")
+        self._speed_calib_action.triggered.connect(self._open_speed_calib_dialog)
+
         help_menu = menubar.addMenu("說明")
         help_menu.addAction("檢視除錯日誌", self._show_log, QKeySequence("Ctrl+L"))
 
@@ -630,18 +642,46 @@ class VideoPlayer(QMainWindow):
 
         # 疊加速度文字
         if self._show_speed_overlay and self._current_speed_kmh is not None and self._current_speed_kmh > 0:
-            frame_bgr = overlay_speed_text(frame_bgr, self._current_speed_kmh)
+            frame_bgr = overlay_speed_text(frame_bgr, self._current_speed_kmh, is_vision=True)
 
-        # 疊加偵測除錯資訊（綠框 + 紅線）
-        if self._show_speed_overlay and self.settings.speed.enabled if self.settings.speed else False:
-            debug = self.ctrl.get_detection_debug()
-            if debug and debug.get("periods"):
+        # 疊加偵測除錯資訊（綠框 + 標線）— 尊重持久化設定，關閉時完全跳過
+        if self._show_speed_overlay and (self.settings.speed.enabled if self.settings.speed else False):
+            try:
+                # 節流：每 _debug_detect_interval 幀更新一次快取，避免每幀 QSettings I/O
+                self._debug_detect_counter += 1
+                if self._debug_detect_counter >= self._debug_detect_interval:
+                    self._debug_detect_counter = 0
+                    dbg_info = self.ctrl.get_detection_debug()
+                    self._debug_cached_speed = dbg_info.get("speed_kmh")
+                    self._debug_cached_confidence = dbg_info.get("confidence", 0.0)
+                    # ROI 也一併節流更新（原每次 QSettings 讀取）
+                    try:
+                        self._debug_cached_roi = self.ctrl.get_speed_roi()
+                    except Exception:
+                        self._debug_cached_roi = None
+                roi_tuple = getattr(self, "_debug_cached_roi", None)
+                if roi_tuple is None:
+                    try:
+                        roi_tuple = self.ctrl.get_speed_roi()
+                        self._debug_cached_roi = roi_tuple
+                    except Exception:
+                        roi_tuple = None
+
+                dbg_speed = self._debug_cached_speed if self._debug_cached_speed else self._current_speed_kmh
                 frame_bgr = overlay_detection_debug(
                     frame_bgr,
-                    periods=debug.get("periods"),
-                    speed_kmh=debug.get("speed_kmh"),
-                    confidence=debug.get("confidence", 0.0),
+                    periods=[1.0] if dbg_speed else None,
+                    speed_kmh=dbg_speed,
+                    confidence=self._debug_cached_confidence,
+                    roi=roi_tuple,
                 )
+            except Exception as e:
+                log.debug(f"live debug overlay 失敗: {e}")
+                # 備援：至少繪製 ROI 空框
+                try:
+                    frame_bgr = overlay_detection_debug(frame_bgr, periods=None, speed_kmh=None, confidence=0.0)
+                except Exception:
+                    pass
 
         qimg = frame_to_qimage(frame_bgr)
         if qimg is None:
@@ -783,7 +823,7 @@ class VideoPlayer(QMainWindow):
             return
 
         out_dir = self.output_path_label.text()
-        prefix = self.prefix_edit.text().strip() or "capture"
+        prefix = self.prefix_edit.text().strip()
         img_format = self.img_format_combo.currentText()
         quality = self.quality_spin.value()
         resolution = Resolution.from_value(self.res_combo.currentText())
@@ -812,16 +852,18 @@ class VideoPlayer(QMainWindow):
 
         out_dir = self.output_path_label.text()
         ext = "jpg" if self.img_format_combo.currentText() == "JPEG" else "png"
-        prefix = self.prefix_edit.text().strip() or "capture"
-        existing = self.ctrl.check_batch_conflict(out_dir, prefix, ext)
+        prefix = self.prefix_edit.text().strip()
+        existing = self.ctrl.check_batch_conflict(
+            out_dir, prefix, ext, self.ctrl.current_source_stem
+        )
         if existing:
             if not self.isVisible():
                 return
             ret = QMessageBox.question(
                 self,
                 "檔案已存在",
-                f"目標資料夾已有 {len(existing)} 個同前綴的 {ext.upper()} 檔案。\n"
-                f"繼續執行將覆蓋既有檔案。\n\n是否繼續？",
+                f"目標資料夾已有 {len(existing)} 個同名（同來源+同幀）的 {ext.upper()} 檔案。\n"
+                f"檔名已含來源影片名稱與幀編號，繼續將覆蓋這些檔案（不會產生重複副本）。\n\n是否繼續？",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -927,29 +969,59 @@ class VideoPlayer(QMainWindow):
             self.map_view.update_position(lat, lon)
 
     def _on_gps_ready(self, video_path: str, has_gps: bool, track_count: int) -> None:
-        """GPS 背景偵測完成，更新選單/地圖/狀態列"""
+        """GPS 背景偵測完成，更新選單/地圖/狀態列
+
+        省資源原則：尊重持久化 show_gps_map 設定，開啟保持開啟、關閉保持關閉。
+        有 GPS 但地圖關閉時僅狀態列提示，不自動彈出或改寫設定（手動開啟）。
+        """
         self._has_gps = has_gps
         self._update_gps_menu_state(has_gps)
-        # 更新狀態列（保留硬體加速資訊）
         hw = self.ctrl.hw_backends
         hw_str = ", ".join(f"{name} ({dev})" for name, dev in hw) if hw else "無（軟體解碼）"
         if has_gps:
             gps_status = f"GPS: {track_count} 個點"
-            self.statusBar().showMessage(f"就緒  |  硬體加速: {hw_str}  |  {gps_status}")
             if self.settings.show_gps_map:
+                self.statusBar().showMessage(f"就緒  |  硬體加速: {hw_str}  |  {gps_status}")
                 self._show_gps_map()
+            else:
+                self.statusBar().showMessage(
+                    f"就緒  |  硬體加速: {hw_str}  |  {gps_status}（地圖已關閉，可至 GPS 選單開啟）"
+                )
         else:
             self.statusBar().showMessage(f"就緒  |  硬體加速: {hw_str}  |  GPS: 無")
 
     def _on_speed_ready(self, video_path: str, track) -> None:
-        """速度掃描完成"""
+        """速度掃描完成 — 尊重持久化 enabled 設定，不自動啟用"""
         point_count = len(track.points) if track else 0
-        self.statusBar().showMessage(f"速度掃描完成: {point_count} 個點, {track.status}")
+        status = getattr(track, "status", "UNKNOWN") if track else "UNKNOWN"
+        self.statusBar().showMessage(f"速度掃描完成: {point_count} 個點, {status}")
+        # 若使用者已關閉測速（省資源），不強制勾選或改寫設定
+        if not self.settings.speed.enabled:
+            return
+        # 立即刷新當前幀的速度顯示與偵測框
+        try:
+            frame_idx = self.ctrl.get_current_frame_index()
+            speed, _ = self.ctrl.get_current_speed(frame_idx)
+            if speed is not None and speed > 0:
+                label = f"{speed:.1f} km/h"
+                # source 為 vision 時標示（實驗）
+                # 這裡無法直接取得 source，速度來源由 _on_speed_updated 判斷
+                self.controls.speed_label.setText(label)
+                self._current_speed_kmh = speed
+            elif status in ("NO_VISION_SPEED", "PARTIAL") and point_count == 0:
+                self.controls.speed_label.setText("-- km/h")
+                self.statusBar().showMessage(f"速度掃描完成: 未偵測到標線 ({status})，請確認路面標線清晰")
+            self._refresh_display()
+        except Exception as e:
+            log.debug(f"_on_speed_ready 刷新失敗: {e}")
 
-    def _on_speed_updated(self, time_sec: float, speed_kmh: float, confidence: str, source: str) -> None:
+    def _on_speed_updated(self, time_sec: float, speed_kmh: float, confidence: float, source: str) -> None:
         """速度更新（來自 SpeedManager）"""
         if speed_kmh > 0:
-            self.controls.speed_label.setText(f"{speed_kmh:.1f} km/h")
+            label = f"{speed_kmh:.1f} km/h"
+            if source == "vision":
+                label += "（實驗）"
+            self.controls.speed_label.setText(label)
         else:
             self.controls.speed_label.setText("-- km/h")
 
@@ -985,12 +1057,133 @@ class VideoPlayer(QMainWindow):
         """開關畫面速度疊加"""
         self._show_speed_overlay = checked
 
-    def _show_gps_map(self) -> None:
-        """顯示 GPS 地圖並載入軌跡"""
-        if not self._has_gps or not self.map_view:
+    def _open_speed_roi_dialog(self) -> None:
+        """開啟 Speed ROI 調整對話框"""
+        if not self.ctrl.video_info:
+            QMessageBox.information(self, "提示", "請先開啟影片")
             return
+
+        import os
+
+        from dashcam_player.ui.dialogs.speed_roi_adjust import SpeedROIAdjustDialog
+
+        fmt = os.path.splitext(self.ctrl._video_path)[1].lstrip(".").lower() or "mp4"
+        vi = self.ctrl.video_info
+        dlg = SpeedROIAdjustDialog(
+            video_path=self.ctrl._video_path,
+            video_width=vi.width,
+            video_height=vi.height,
+            file_format=fmt,
+            app_settings=self.ctrl.settings,
+            parent=self,
+        )
+        if dlg.exec_():
+            # ROI 設定已儲存，失效 SpeedManager 的快取並立即更新畫面快取
+            try:
+                self.ctrl._speed.invalidate_roi_cache()
+                # 立即套用新 ROI 到即時疊加顯示，避免仍顯示舊的車體框
+                new_setting = dlg.get_result()
+                if new_setting is not None:
+                    self._debug_cached_roi = (new_setting.roi_x, new_setting.roi_y, new_setting.roi_w, new_setting.roi_h)
+            except Exception:
+                pass
+
+    def _open_speed_calib_dialog(self) -> None:
+        """開啟速度校準對話框：輸入已知速度 → 計算正確的 pixels_per_meter"""
+        if not self.ctrl.video_info:
+            QMessageBox.information(self, "提示", "請先開啟影片")
+            return
+
+        # 取得目前偵測到的 displacements
+        debug = self.ctrl.get_detection_debug()
+        displacements = debug.get("displacements") if debug else None
+
+        if not displacements:
+            QMessageBox.information(
+                self, "提示",
+                "目前未偵測到標線位移，無法校準。\n"
+                "請先確認 ROI 設定正確，且影片中有可見的車道標線。"
+            )
+            return
+
+        import numpy as np
+
+        avg_disp = float(np.mean(displacements))
+        current_speed = debug.get("speed_kmh", 0.0) or 0.0
+
+        from PyQt5.QtWidgets import QInputDialog
+
+        known_speed, ok = QInputDialog.getDouble(
+            self, "速度校準",
+            f"目前偵測平均位移: {avg_disp:.2f} px/幀\n"
+            f"目前估算速度: {current_speed:.1f} km/h\n\n"
+            f"請輸入實際速度 (km/h)：\n"
+            f"（可參考 GPS 顯示的速度）",
+            current_speed,  # 預設值用目前估算值
+            1.0,    # 最小
+            300.0,  # 最大
+            1,      # 小數位
+        )
+
+        if not ok or known_speed <= 0:
+            return
+
+        # 校準 ppm：speed_mps = avg_disp * fps / ppm
+        # → ppm = avg_disp * fps / speed_mps
+        import os
+
+        fps = self.ctrl.fps if self.ctrl.fps > 0 else 30.0
+        known_mps = known_speed / 3.6
+        if avg_disp > 0 and known_mps > 0:
+            new_ppm = avg_disp * fps / known_mps
+            new_ppm = max(1.0, new_ppm)
+        else:
+            QMessageBox.warning(self, "校準失敗", "位移值或速度為 0，無法校準")
+            return
+
+        # 儲存
+        fmt = os.path.splitext(self.ctrl._video_path)[1].lstrip(".").lower() or "mp4"
+        vi = self.ctrl.video_info
+        self.ctrl.settings.save_speed_ppm(vi.width, vi.height, fmt, new_ppm)
+
+        QMessageBox.information(
+            self, "校準完成",
+            f"已儲存校準值:\n"
+            f"pixels_per_meter = {new_ppm:.1f}\n"
+            f"(原本: 50.0)\n\n"
+            f"重新開始掃描後生效。"
+        )
+
+    def _show_gps_map(self) -> None:
+        """顯示 GPS 地圖並載入軌跡
+
+        容錯：若 facade 回傳空軌跡但 _has_gps 為 True（例如提取競態），
+        嘗試直接從 manager 取得原始軌跡；仍為空則顯示空地圖提示而非靜默隱藏。
+        """
+        if not self.map_view:
+            return
+        # _has_gps 為 False 時可能是外部檔案 GPS 尚未完成背景載入但使用者手動觸發，
+        # 仍嘗試載入軌跡以避免「有軌跡但不顯示」
         tracks = self.ctrl.get_gps_tracks()
+        if not tracks and self._has_gps:
+            # 後備：直接從 GPSManager 取原始 tracks（避免 facade 的 has_gps_data 過濾）
+            try:
+                mgr = self.ctrl._gps_manager  # type: ignore[attr-defined]
+                if mgr and getattr(mgr, "_tracks", None):
+                    tracks = mgr._tracks  # type: ignore[attr-defined]
+            except Exception:
+                pass
         if not tracks:
+            # 無軌跡時仍顯示地圖容器並載入空地圖，避免使用者誤以為「地圖沒出現是 bug」
+            self.map_view.setVisible(True)
+            self.map_view.load_tracks(
+                [],
+                provider=self.settings.map_provider,
+                google_maps_key=self.settings.google_maps_api_key,
+            )
+            # 同步狀態列提示
+            if self._has_gps:
+                self.statusBar().showMessage("GPS 已載入但軌跡為空，請檢查影片或 ROI 設定")
             return
         tracks_dict = [t.to_dict() if hasattr(t, "to_dict") else t for t in tracks]
         self.map_view.setVisible(True)

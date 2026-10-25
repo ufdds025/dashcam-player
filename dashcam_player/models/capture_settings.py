@@ -5,12 +5,39 @@ from typing import Any
 
 from dashcam_player.models.resolution import Resolution
 
+# 台灣高速公路局規範白實線參數（物理常數，非可調參數）
+MARKING_WHITE_LENGTH_M = 4.0
+MARKING_GAP_LENGTH_M = 6.0
+MARKING_CYCLE_LENGTH_M = 10.0
+
 # 預設輸出資料夾名稱（相對路徑會以 os.path.abspath 解析為 CWD 下 captures/）
 DEFAULT_OUTPUT_DIR = "captures"
 
 # 「不縮放」sentinel：UI 下拉選單第一項同時是 FFmpeg build_export_cmd 的判斷依據。
 # ⚠️ 必須與 Resolution.ORIGINAL.value 一致；改動會讓匯出縮放靜默失效。
 SCALE_ORIGINAL = "原始"
+
+
+@dataclass
+class HighwayMarkingSpec:
+    """台灣高速公路局規範：白實線長度、間隔、一組黑白距離。
+
+    這是物理常數（非可調參數），來自實測規範：
+    - 白色實線長度：4 公尺
+    - 2 組白色實線間隔：6 公尺
+    - 一組一黑一白距離：10 公尺
+    """
+
+    white_length_m: float = MARKING_WHITE_LENGTH_M
+    gap_length_m: float = MARKING_GAP_LENGTH_M
+    cycle_length_m: float = MARKING_CYCLE_LENGTH_M
+
+    def to_dict(self) -> dict:
+        return {
+            "white_length_m": self.white_length_m,
+            "gap_length_m": self.gap_length_m,
+            "cycle_length_m": self.cycle_length_m,
+        }
 
 
 @dataclass
@@ -52,12 +79,24 @@ class GpsDisplaySettings:
 
 @dataclass
 class SpeedSettings:
-    """軟體測速設定"""
+    """軟體測速設定（預設省資源，手動開啟）。
+
+    distance_per_cycle 為台灣高速規範物理常數（10m），
+    非可調參數——僅在道路標線規範不同時才應修改。
+    """
 
     enabled: bool = False
-    distance_per_cycle: float = 10.0
+    distance_per_cycle: float = MARKING_CYCLE_LENGTH_M
     smoothing_window: int = 5
     burn_speed_on_export: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "distance_per_cycle": self.distance_per_cycle,
+            "smoothing_window": self.smoothing_window,
+            "burn_speed_on_export": self.burn_speed_on_export,
+        }
 
 
 # 所有 sub-dataclass 欄位名的並集，用於 __getattr__ 委派
