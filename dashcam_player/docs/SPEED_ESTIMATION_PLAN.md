@@ -1,3 +1,5 @@
+> 🧊 2026-10-26 已凍結，見 [dashcam_player/docs/VISION_SPEED_POSTMORTEM.md](dashcam_player/docs/VISION_SPEED_POSTMORTEM.md)
+
 # 軟體測速與 GPS 特徵比對校正 — 詳細實作計畫書
 
 > **專案**：行車紀錄器影片播放與截圖工具  
