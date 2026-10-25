@@ -1017,15 +1017,18 @@ class VideoPlayer(QMainWindow):
             log.debug(f"_on_speed_ready 刷新失敗: {e}")
 
     def _on_speed_updated(self, time_sec: float, speed_kmh: float, confidence: float, source: str) -> None:
-        """速度更新（來自 SpeedManager）"""
-        if speed_kmh > 0:
-            self.controls.speed_label.setText(format_speed_label(speed_kmh, source))
-            self._current_speed_kmh = speed_kmh
-            self._current_speed_source = source
-        else:
-            self.controls.speed_label.setText("-- km/h")
-            self._current_speed_kmh = None
-            self._current_speed_source = ""
+        """速度更新（來自 SpeedManager 背景掃描）——僅顯示掃描進度，不覆蓋畫面顯示。
+
+        背景掃描發出的 speed_updated 使用的是掃描進度時間 (time_sec)，
+        不是目前播放/暫停的畫面幀。若在此處更新 _current_speed_kmh、
+        會導致畫面疊加速度變成「掃到哪一段的速度」，且違反 GPS 優先原則。
+
+        正確做法：畫面速度一律由 _on_position_updated（播放時）與
+        _on_speed_ready（掃描完成後）透過 ctrl.get_current_speed(frame_idx)
+        取得（已實作 GPS 優先）。本函式僅在狀態列顯示掃描進度。
+        """
+        # 僅在狀態列顯示掃描進度（不更新速度標籤、不寫入 _current_speed_kmh/_source）
+        self.statusBar().showMessage(f"視覺測速掃描中… t={time_sec:.1f}s ({source}, 信心度={confidence:.0%})")
 
     def _toggle_gps_map(self, checked: bool) -> None:
         """開關 GPS 地圖顯示"""

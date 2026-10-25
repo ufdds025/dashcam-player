@@ -4,7 +4,12 @@ import queue
 
 import numpy as np
 import pytest
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QSettings, Qt
+from PyQt5.QtWidgets import QApplication
+
+# 設定 Qt.AA_ShareOpenGLContexts 必須在 QCoreApplication/QApplication 建立前
+# 這是為了支援 QtWebEngine（MapView 使用），否則 import 會失敗
+QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
 
 from dashcam_player.core.video_worker import VideoWorker
 

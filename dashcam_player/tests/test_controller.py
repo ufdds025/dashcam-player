@@ -407,3 +407,51 @@ class TestGetCurrentSpeedGPSPriority:
 
         assert speed is None
         assert source == ""
+
+
+class TestVideoPlayerSpeedUpdated:
+    """VideoPlayer._on_speed_updated 在背景掃描時不覆蓋畫面速度（WO-1026c）。"""
+
+    def test_on_speed_updated_does_not_overwrite_current_speed(self, qapp):
+        """收到 vision speed_updated 時，_current_speed_kmh 與 speed_label 不變。"""
+        # 在 qapp fixture 執行後（QApplication 已建立）再 import VideoPlayer
+        from unittest.mock import MagicMock, Mock
+
+        from dashcam_player.core.controller import Controller
+        from dashcam_player.core.video_player import VideoPlayer
+        from dashcam_player.models.video_info import VideoInfo
+
+        # 建立 VideoPlayer，並 mock 其 UI 元件與 controller
+        player = VideoPlayer()
+        player.ctrl = Mock(spec=Controller)
+        player.ctrl.video_info = VideoInfo(path="test.mp4", fps=30.0, frame_count=3000, duration=100.0)
+
+        # Mock controls.speed_label
+        mock_speed_label = MagicMock()
+        player.controls = MagicMock()
+        player.controls.speed_label = mock_speed_label
+
+        # Mock statusBar
+        mock_statusbar = MagicMock()
+        player.statusBar = Mock(return_value=mock_statusbar)
+
+        # 先設定一個 GPS 速度（模擬播放中已有 GPS 速度顯示）
+        player._current_speed_kmh = 60.0
+        player._current_speed_source = "gps"
+        mock_speed_label.text.return_value = "60.0 km/h"
+
+        # 呼叫 _on_speed_updated（背景掃描發出的 vision 速度）
+        player._on_speed_updated(time_sec=12.3, speed_kmh=45.0, confidence=0.8, source="vision")
+
+        # 驗證：_current_speed_kmh 與 _current_speed_source 不變（仍為 GPS）
+        assert player._current_speed_kmh == 60.0
+        assert player._current_speed_source == "gps"
+
+        # 驗證：speed_label 沒有被呼叫 setText（即不更新畫面顯示）
+        mock_speed_label.setText.assert_not_called()
+
+        # 驗證：狀態列顯示了掃描進度訊息
+        mock_statusbar.showMessage.assert_called()
+        msg = mock_statusbar.showMessage.call_args[0][0]
+        assert "視覺測速掃描中" in msg
+        assert "vision" in msg
