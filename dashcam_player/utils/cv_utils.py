@@ -340,6 +340,18 @@ def overlay_gps_text(frame: np.ndarray, gps_coord: tuple) -> np.ndarray:
     return put_text_cn(frame, text, (tx, ty), font_size=18, color=(0, 0, 0), stroke_color=(255, 255, 255), stroke_width=2)
 
 
+def format_speed_label(speed_kmh: float, source: str) -> str:
+    """組合速度標籤字串（供疊加與狀態列共用）。
+
+    Args:
+        source: 速度來源（"vision" / "gps" / 其他），"vision" 時尾部加上「（實驗）」
+    """
+    text = f"{speed_kmh:.1f} km/h"
+    if source == "vision":
+        text += "（實驗）"
+    return text
+
+
 def overlay_speed_text(frame: np.ndarray, speed_kmh: float, confidence: float = 0.0, is_vision: bool = False) -> np.ndarray:
     """在畫面右下角疊加速度文字（白字黑框，中文環境不亂碼）
 
@@ -347,9 +359,7 @@ def overlay_speed_text(frame: np.ndarray, speed_kmh: float, confidence: float = 
         is_vision: 是否為視覺測速（實驗功能），若為 True 會在速度後加上「（實驗）」
     """
     frame = frame.copy()
-    text = f"{speed_kmh:.1f} km/h"
-    if is_vision:
-        text += "（實驗）"
+    text = format_speed_label(speed_kmh, "vision" if is_vision else "")
     h, w = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
     text_size = cv2.getTextSize(text, font, 0.7, 2)[0]

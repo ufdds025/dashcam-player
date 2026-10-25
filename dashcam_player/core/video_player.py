@@ -51,7 +51,7 @@ from dashcam_player.ui.widgets.encoder_fields import (
 
 if TYPE_CHECKING:
     from dashcam_player.models.capture_settings import CaptureSettings
-from dashcam_player.utils.cv_utils import frame_to_qimage, overlay_speed_text
+from dashcam_player.utils.cv_utils import format_speed_label, frame_to_qimage, overlay_speed_text
 from dashcam_player.utils.log import get_log_path, get_logger
 from dashcam_player.utils.time_utils import format_time
 from dashcam_player.utils.vision_speed import overlay_detection_debug
@@ -82,6 +82,7 @@ class VideoPlayer(QMainWindow):
         # GPS / 地圖
         self._has_gps: bool = False
         self._current_speed_kmh: float | None = None
+        self._current_speed_source: str = ""
         self._show_speed_overlay: bool = True
         self.map_view: MapView | None = None  # 在 _init_ui 建立
 
@@ -600,11 +601,13 @@ class VideoPlayer(QMainWindow):
         # 查詢視覺測速
         speed_kmh, source = self.ctrl.get_current_speed(frame_idx)
         if speed_kmh is not None and speed_kmh > 0:
-            self.controls.speed_label.setText(f"{speed_kmh:.1f} km/h")
+            self.controls.speed_label.setText(format_speed_label(speed_kmh, source))
             self._current_speed_kmh = speed_kmh
+            self._current_speed_source = source
         else:
             self.controls.speed_label.setText("-- km/h")
             self._current_speed_kmh = None
+            self._current_speed_source = ""
 
     def _on_load_failed(self, msg: str) -> None:
         if self.isVisible():
@@ -642,7 +645,7 @@ class VideoPlayer(QMainWindow):
 
         # 疊加速度文字
         if self._show_speed_overlay and self._current_speed_kmh is not None and self._current_speed_kmh > 0:
-            frame_bgr = overlay_speed_text(frame_bgr, self._current_speed_kmh, is_vision=True)
+            frame_bgr = overlay_speed_text(frame_bgr, self._current_speed_kmh, is_vision=(self._current_speed_source == "vision"))
 
         # 疊加偵測除錯資訊（綠框 + 標線）— 尊重持久化設定，關閉時完全跳過
         if self._show_speed_overlay and (self.settings.speed.enabled if self.settings.speed else False):
@@ -1001,13 +1004,11 @@ class VideoPlayer(QMainWindow):
         # 立即刷新當前幀的速度顯示與偵測框
         try:
             frame_idx = self.ctrl.get_current_frame_index()
-            speed, _ = self.ctrl.get_current_speed(frame_idx)
+            speed, source = self.ctrl.get_current_speed(frame_idx)
             if speed is not None and speed > 0:
-                label = f"{speed:.1f} km/h"
-                # source 為 vision 時標示（實驗）
-                # 這裡無法直接取得 source，速度來源由 _on_speed_updated 判斷
-                self.controls.speed_label.setText(label)
+                self.controls.speed_label.setText(format_speed_label(speed, source))
                 self._current_speed_kmh = speed
+                self._current_speed_source = source
             elif status in ("NO_VISION_SPEED", "PARTIAL") and point_count == 0:
                 self.controls.speed_label.setText("-- km/h")
                 self.statusBar().showMessage(f"速度掃描完成: 未偵測到標線 ({status})，請確認路面標線清晰")
@@ -1018,12 +1019,13 @@ class VideoPlayer(QMainWindow):
     def _on_speed_updated(self, time_sec: float, speed_kmh: float, confidence: float, source: str) -> None:
         """速度更新（來自 SpeedManager）"""
         if speed_kmh > 0:
-            label = f"{speed_kmh:.1f} km/h"
-            if source == "vision":
-                label += "（實驗）"
-            self.controls.speed_label.setText(label)
+            self.controls.speed_label.setText(format_speed_label(speed_kmh, source))
+            self._current_speed_kmh = speed_kmh
+            self._current_speed_source = source
         else:
             self.controls.speed_label.setText("-- km/h")
+            self._current_speed_kmh = None
+            self._current_speed_source = ""
 
     def _toggle_gps_map(self, checked: bool) -> None:
         """開關 GPS 地圖顯示"""
