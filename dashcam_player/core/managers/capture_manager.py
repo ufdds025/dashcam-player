@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import os
-import time
 from typing import TYPE_CHECKING
 
 import cv2
@@ -29,6 +28,7 @@ from dashcam_player.utils.cv_utils import (
     imwrite_safe,
     write_exif_gps,
 )
+from dashcam_player.utils.filename_utils import build_capture_filename, capture_glob
 from dashcam_player.utils.log import get_logger
 
 log = get_logger()
@@ -74,18 +74,23 @@ class CaptureManager(QObject):
             return "請先正確設定開始與結束標記（開始 < 結束）"
         return None
 
-    def check_batch_conflict(self, out_dir: str, prefix: str, ext: str) -> list[str]:
+    def check_batch_conflict(
+        self, out_dir: str, prefix: str, ext: str, src_stem: str
+    ) -> list[str]:
         """列出與批次截圖會衝突的既有檔案。
 
-        批次命名為 ``{prefix}_frame{idx:06d}.{ext}``，單張為 ``{prefix}_{timestamp}.{ext}``，
-        兩者皆以 ``{prefix}_`` 開頭，故以此為比對基準。
+        新命名為 ``{prefix}_{src_stem}_f{idx:06d}.{ext}``（單張與批次一致，皆以真實幀編號命名）。
+        比對基準為 ``capture_glob(prefix, src_stem, ext)``，因此只有「同來源」的舊檔會被視為衝突；
+        不同來源（不同 stem）不再撞名。
         """
+        import glob as _glob
+
         if not os.path.isdir(out_dir):
             return []
+        pattern = capture_glob(prefix, src_stem, ext)
         return [
-            f
-            for f in os.listdir(out_dir)
-            if f.startswith(f"{prefix}_") and f.endswith(f".{ext}")
+            os.path.basename(p)
+            for p in _glob.glob(os.path.join(out_dir, pattern))
         ]
 
     # ---- single capture ----
@@ -107,9 +112,7 @@ class CaptureManager(QObject):
         gps_coord = self._get_gps_at_frame(frame_idx, fps, gps_manager)
         os.makedirs(out_dir or os.path.abspath(DEFAULT_OUTPUT_DIR), exist_ok=True)
         out_dir = out_dir or os.path.abspath(DEFAULT_OUTPUT_DIR)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        ext = "jpg" if img_format == "JPEG" else "png"
-        fname = f"{prefix}_{ts}.{ext}"
+        fname = build_capture_filename(self._video_path, frame_idx, prefix, img_format)
         path = os.path.join(out_dir, fname)
         params = []
         if img_format == "JPEG":
@@ -140,7 +143,8 @@ class CaptureManager(QObject):
         if start_frame < 0 or end_frame < 0 or start_frame >= end_frame:
             return
         if capture_fps > original_fps:
-            capture_fps = int(original_fps)
+            # 使用四捨五入避免 29.97→29 的截斷誤差，至少 1
+            capture_fps = max(1, int(round(original_fps)))
 
         if self._batch_worker is not None and self._batch_worker.isRunning():
             log.warning("批次截圖已在執行中，忽略重複請求")

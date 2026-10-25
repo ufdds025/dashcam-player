@@ -69,44 +69,51 @@ class TestValidateBatchRange:
 
 class TestCheckBatchConflict:
     def test_nonexistent_dir(self, controller):
-        result = controller.check_batch_conflict("/nonexistent/path", "capture", "jpg")
+        result = controller.check_batch_conflict("/nonexistent/path", "capture", "jpg", "CLIP")
         assert result == []
 
     def test_empty_dir(self, controller):
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = controller.check_batch_conflict(tmpdir, "capture", "jpg")
+            result = controller.check_batch_conflict(tmpdir, "capture", "jpg", "CLIP")
             assert result == []
 
     def test_no_conflict(self, controller):
         with tempfile.TemporaryDirectory() as tmpdir:
-            open(os.path.join(tmpdir, "other_file.jpg"), "w").close()
-            result = controller.check_batch_conflict(tmpdir, "capture", "jpg")
+            open(os.path.join(tmpdir, "unrelated.jpg"), "w").close()
+            result = controller.check_batch_conflict(tmpdir, "capture", "jpg", "CLIP")
             assert result == []
 
     def test_has_conflict(self, controller):
         with tempfile.TemporaryDirectory() as tmpdir:
-            open(os.path.join(tmpdir, "capture_frame000001.jpg"), "w").close()
-            open(os.path.join(tmpdir, "capture_frame000002.jpg"), "w").close()
-            result = controller.check_batch_conflict(tmpdir, "capture", "jpg")
+            open(os.path.join(tmpdir, "capture_CLIP_f000001.jpg"), "w").close()
+            open(os.path.join(tmpdir, "capture_CLIP_f000002.jpg"), "w").close()
+            result = controller.check_batch_conflict(tmpdir, "capture", "jpg", "CLIP")
             assert len(result) == 2
 
     def test_conflict_with_single_capture_naming(self, controller):
-        """單張截圖命名 {prefix}_{timestamp}.{ext} 也應被視為衝突。"""
+        """單張與批次現在使用相同幀編號命名，故舊單張檔也視為衝突。"""
         with tempfile.TemporaryDirectory() as tmpdir:
-            open(os.path.join(tmpdir, "capture_20260816_120000.jpg"), "w").close()
-            result = controller.check_batch_conflict(tmpdir, "capture", "jpg")
+            open(os.path.join(tmpdir, "capture_CLIP_f000050.jpg"), "w").close()
+            result = controller.check_batch_conflict(tmpdir, "capture", "jpg", "CLIP")
             assert len(result) == 1
 
     def test_conflict_wrong_ext(self, controller):
         with tempfile.TemporaryDirectory() as tmpdir:
-            open(os.path.join(tmpdir, "capture_frame000001.png"), "w").close()
-            result = controller.check_batch_conflict(tmpdir, "capture", "jpg")
+            open(os.path.join(tmpdir, "capture_CLIP_f000001.png"), "w").close()
+            result = controller.check_batch_conflict(tmpdir, "capture", "jpg", "CLIP")
             assert result == []
 
     def test_conflict_wrong_prefix(self, controller):
         with tempfile.TemporaryDirectory() as tmpdir:
-            open(os.path.join(tmpdir, "other_frame000001.jpg"), "w").close()
-            result = controller.check_batch_conflict(tmpdir, "capture", "jpg")
+            open(os.path.join(tmpdir, "other_CLIP_f000001.jpg"), "w").close()
+            result = controller.check_batch_conflict(tmpdir, "capture", "jpg", "CLIP")
+            assert result == []
+
+    def test_conflict_wrong_source(self, controller):
+        """不同來源（不同 stem）不視為衝突，解決跨來源撞名問題。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "capture_OTHER_f000001.jpg"), "w").close()
+            result = controller.check_batch_conflict(tmpdir, "capture", "jpg", "CLIP")
             assert result == []
 
 

@@ -149,6 +149,18 @@ class GPSFacade(QObject):
         seconds = frame_idx / fps
         return self._gps_manager.get_position_at_time(seconds)
 
+    def get_current_speed(self, frame_idx: int, fps: float) -> float | None:
+        """取得當前幀的 GPS 速度 (km/h)，供視覺測速失效時備援。"""
+        if not self._gps_manager or not self._gps_manager.has_gps_data():
+            return None
+        if fps <= 0:
+            return None
+        seconds = frame_idx / fps
+        try:
+            return self._gps_manager.get_speed_at_time(seconds)
+        except Exception:
+            return None
+
     # ---- GPS data access ----
 
     def has_gps_data(self) -> bool:

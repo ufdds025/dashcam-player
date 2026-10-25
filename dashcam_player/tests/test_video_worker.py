@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from dashcam_player.core.video_worker import _CmdType, _Command
+import pytest
+
+from dashcam_player.core.video_worker import (
+    _CmdType,
+    _Command,
+    _compute_frame_interval,
+)
 
 
 class TestVideoWorkerCommandQueue:
@@ -125,6 +131,44 @@ class TestVideoWorkerSeekFailure:
         w._do_seek(0)
         assert emitted == []
         assert received == [(frame, 0)]
+
+
+class TestComputeFrameInterval:
+    """播放 pacing 間隔：只由偵測值推導，無硬編碼幀率。"""
+
+    def test_pts_interval_even_spacing(self) -> None:
+        # 5fps 源：相鄰 PTS 差 0.2s → 間隔 0.2s（1/30、6/30… 均勻分佈）
+        pts = [i * 0.2 for i in range(10)]
+        assert _compute_frame_interval(pts, 3, 5.0, 5.0) == pytest.approx(0.2)
+
+    def test_pts_interval_normal_30fps(self) -> None:
+        pts = [i / 30.0 for i in range(60)]
+        assert _compute_frame_interval(pts, 10, 30.0, 30.0) == pytest.approx(1 / 30.0)
+
+    def test_speed_factor_applies(self) -> None:
+        pts = [i * 0.2 for i in range(10)]
+        # 2 倍速：間隔減半
+        assert _compute_frame_interval(pts, 3, 5.0, 10.0) == pytest.approx(0.1)
+
+    def test_no_pts_falls_back_to_target_fps(self) -> None:
+        assert _compute_frame_interval([], 0, 5.0, 5.0) == pytest.approx(0.2)
+        assert _compute_frame_interval(None, 0, 30.0, 30.0) == pytest.approx(1 / 30.0)
+
+    def test_abnormal_interval_falls_back(self) -> None:
+        # 零/負間隔與 >1s 大間隔都回退 1/target_fps
+        assert _compute_frame_interval([0.0, 0.0], 0, 5.0, 5.0) == pytest.approx(0.2)
+        assert _compute_frame_interval([0.0, 5.0], 0, 5.0, 5.0) == pytest.approx(0.2)
+
+    def test_last_frame_falls_back(self) -> None:
+        pts = [0.0, 0.2, 0.4]
+        assert _compute_frame_interval(pts, 2, 5.0, 5.0) == pytest.approx(0.2)
+
+    def test_set_target_fps_requests_pace_reset(self, video_worker) -> None:
+        w = video_worker
+        assert w._pace_reset_requested is False
+        w.set_target_fps(10.0)
+        assert w._target_fps == 10.0
+        assert w._pace_reset_requested is True
 
 
 class _FakeCap:

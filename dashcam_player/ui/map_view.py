@@ -65,6 +65,17 @@ class MapView(QWidget):
         self._provider = provider
         self._google_maps_key = google_maps_key
         self._render_map()
+        # 確保在 splitter 中立即可見（首次顯示時分配 60/40 比例）
+        try:
+            if self.isVisible() and self.parent():
+                from PyQt5.QtWidgets import QSplitter
+
+                splitter = self.parent()
+                if isinstance(splitter, QSplitter):
+                    total = splitter.width() or 1000
+                    splitter.setSizes([int(total * 0.6), int(total * 0.4)])
+        except Exception:
+            pass
 
     def update_position(self, lat: float, lon: float) -> None:
         """更新當前位置標記"""
@@ -115,7 +126,13 @@ class MapView(QWidget):
         """
         try:
             self.web_view.loadFinished.disconnect(self._on_load_finished)
-        except TypeError:
-            pass  # 尚未連接或已斷開
-        self.web_view.stop()
-        self.web_view.setHtml("")
+        except (TypeError, RuntimeError):
+            pass  # 尚未連接、已斷開或已銷毀
+        try:
+            self.web_view.stop()
+        except RuntimeError:
+            pass
+        try:
+            self.web_view.setHtml("")
+        except RuntimeError:
+            pass

@@ -14,20 +14,32 @@ from dashcam_player.models.capture_settings import (
 )
 from dashcam_player.models.gps_roi import GPSROISetting
 from dashcam_player.models.speed import CalibrationProfile
+from dashcam_player.models.speed_roi import SpeedROISetting
+from dashcam_player.utils.log import get_logger
+
+log = get_logger()
 
 
 @functools.lru_cache(maxsize=1)
-def _flat_capture_fields() -> dict[str, str]:
-    """平鋪欄位名 → 型別註記字串（彙整自四個 sub-dataclass）。
+def _flat_capture_fields() -> dict[str, type]:
+    """平鋪欄位名 → 實際型別（彙整自四個 sub-dataclass）。
 
     CaptureSettings 為組合式 dataclass，自身欄位只有
     screenshot/export/gps/speed；實際設定的平鋪名稱（fps、prefix…）
     定義在 sub-dataclass 中。
+    回傳值為真實 type 物件，避免 str 轉換導致比對失效。
     """
-    fields: dict[str, str] = {}
+    fields: dict[str, type] = {}
     for cls in (ScreenshotSettings, ExportSettings, GpsDisplaySettings, SpeedSettings):
         for f in cls.__dataclass_fields__.values():
-            fields[f.name] = str(f.type)
+            # f.type 可能是字串（from __future__ import annotations）或 type
+            typ = f.type
+            if isinstance(typ, str):
+                # 延遲註解 → 手動對應常見型別
+                typ_map: dict[str, type] = {"int": int, "float": float, "bool": bool, "str": str}
+                # Resolution 等自訂型別保持為 str，避免硬比對
+                typ = typ_map.get(typ, str)
+            fields[f.name] = typ  # type: ignore[assignment]
     return fields
 
 
@@ -37,10 +49,16 @@ def _coerce_by_field_type(val: object, field_type: object) -> object:
     Windows 原生後端會把 bool/int/float 存成字串（如 "true"/"95"），
     直接塞進 dataclass 會在下游（cv2.imencode 等）爆炸。
     還原失敗時回傳 None，呼叫端略過該 key 改用 dataclass 預設值。
+    field_type 可為 type 物件或舊版字串（相容）。
     """
-    type_name = (
-        field_type if isinstance(field_type, str) else getattr(field_type, "__name__", "")
-    )
+    if isinstance(field_type, str):
+        # 相容舊呼叫：傳字串型別名
+        type_name = field_type
+        if "<class '" in type_name:  # 如 "<class 'bool'>"
+            # 抽取內部名稱
+            type_name = type_name.split("'")[1].split(".")[-1] if "'" in type_name else type_name
+    else:
+        type_name = getattr(field_type, "__name__", "")
     if isinstance(val, str):
         if type_name == "bool":
             return val.lower() in ("true", "1", "yes")
@@ -207,32 +225,73 @@ class AppSettings:
 
     def load_speed_roi(
         self, resolution_w: int, resolution_h: int, file_format: str
-    ) -> dict | None:
+    ) -> SpeedROISetting | None:
         key = self._speed_roi_key(resolution_w, resolution_h, file_format)
-        x = self._store.value(f"{key}/x")
+        x = self._store.value(f"{key}/roi_x")
         if x is None:
             return None
-        y = self._store.value(f"{key}/y")
-        w = self._store.value(f"{key}/w")
-        h = self._store.value(f"{key}/h")
+        y = self._store.value(f"{key}/roi_y")
+        w = self._store.value(f"{key}/roi_w")
+        h = self._store.value(f"{key}/roi_h")
         if None in (y, w, h):
             return None
-        return {
-            "x": float(x),
-            "y": float(y),
-            "w": float(w),
-            "h": float(h),
-            "corner": self._store.value(f"{key}/corner", "", type=str),
-        }
+        # hood_top_y 缺 key（舊存檔）或損毀 → None，不影響舊框載入
+        hood: float | None = None
+        try:
+            hv = self._store.value(f"{key}/hood_top_y")
+            hood = float(hv) if hv is not None else None
+            if hood is not None and not (0.0 < hood < 1.0):
+                hood = None
+        except (ValueError, TypeError):
+            hood = None
+        return SpeedROISetting(
+            resolution_w=resolution_w,
+            resolution_h=resolution_h,
+            file_format=file_format,
+            roi_x=float(x),
+            roi_y=float(y),
+            roi_w=float(w),
+            roi_h=float(h),
+            side=self._store.value(f"{key}/side", "both", type=str),
+            source=self._store.value(f"{key}/source", "user_adjusted", type=str),
+            confidence=float(self._store.value(f"{key}/confidence", 1.0, type=float)),
+            timestamp=float(self._store.value(f"{key}/timestamp", 0.0, type=float)),
+            hood_top_y=hood,
+        )
 
-    def save_speed_roi(self, roi: dict) -> None:
-        # roi dict should have: resolution_w, resolution_h, file_format, x, y, w, h, corner
-        key = self._speed_roi_key(roi["resolution_w"], roi["resolution_h"], roi["file_format"])
-        self._store.setValue(f"{key}/x", roi["x"])
-        self._store.setValue(f"{key}/y", roi["y"])
-        self._store.setValue(f"{key}/w", roi["w"])
-        self._store.setValue(f"{key}/h", roi["h"])
-        self._store.setValue(f"{key}/corner", roi.get("corner", ""))
+    def save_speed_roi(self, setting: SpeedROISetting) -> None:
+        # 拒絕滿寬 ROI（rw >= 0.98），避免因誤判導致視覺測速失效
+        if setting.roi_w >= 0.98:
+            log.warning(f"拒絕儲存滿寬 Speed ROI (rw={setting.roi_w:.2f})，避免視覺測速失效")
+            return
+        key = self._speed_roi_key(setting.resolution_w, setting.resolution_h, setting.file_format)
+        self._store.setValue(f"{key}/roi_x", setting.roi_x)
+        self._store.setValue(f"{key}/roi_y", setting.roi_y)
+        self._store.setValue(f"{key}/roi_w", setting.roi_w)
+        self._store.setValue(f"{key}/roi_h", setting.roi_h)
+        self._store.setValue(f"{key}/side", setting.side)
+        self._store.setValue(f"{key}/source", setting.source)
+        self._store.setValue(f"{key}/confidence", setting.confidence)
+        self._store.setValue(f"{key}/timestamp", setting.timestamp)
+        if setting.hood_top_y is not None:
+            self._store.setValue(f"{key}/hood_top_y", setting.hood_top_y)
+        self._store.sync()
+
+    def load_speed_ppm(self, resolution_w: int, resolution_h: int, file_format: str) -> float:
+        """載入已校準的 pixels_per_meter（無則回傳預設 50.0）"""
+        key = self._speed_roi_key(resolution_w, resolution_h, file_format)
+        val = self._store.value(f"{key}/ppm")
+        if val is not None:
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                pass
+        return 50.0
+
+    def save_speed_ppm(self, resolution_w: int, resolution_h: int, file_format: str, ppm: float) -> None:
+        """儲存校準後的 pixels_per_meter"""
+        key = self._speed_roi_key(resolution_w, resolution_h, file_format)
+        self._store.setValue(f"{key}/ppm", ppm)
         self._store.sync()
 
     # ---- Speed Calibration 設定 ----

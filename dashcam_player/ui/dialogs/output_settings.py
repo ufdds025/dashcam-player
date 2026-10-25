@@ -55,8 +55,12 @@ class OutputSettingsDialog(QDialog):
         layout.addWidget(self.res_combo, row, 1)
 
         row += 1
-        layout.addWidget(QLabel("檔名前綴:"), row, 0)
+        layout.addWidget(QLabel("檔名前綴 (選用):"), row, 0)
         self.prefix_edit = QLineEdit(settings.prefix)
+        self.prefix_edit.setToolTip(
+            "選用前標，會加在來源影片名稱之前。\n"
+            "來源檔名與幀編號會自動加入檔名以識別來源，無須在此填寫。"
+        )
         layout.addWidget(self.prefix_edit, row, 1)
 
         row += 1
@@ -112,7 +116,7 @@ class OutputSettingsDialog(QDialog):
         self._result = self._original.replace(
             fps=self.fps_spin.value(),
             resolution=Resolution.from_value(self.res_combo.currentText()),
-            prefix=self.prefix_edit.text().strip() or "capture",
+            prefix=self.prefix_edit.text().strip(),
             img_format=self.img_format_combo.currentText(),
             jpeg_quality=self.quality_spin.value(),
             output_dir=self.output_label.text(),

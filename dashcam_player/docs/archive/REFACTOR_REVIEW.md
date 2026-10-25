@@ -1,5 +1,7 @@
 # REFACTOR 設計審查紀錄
 
+> **🗄️ 已歸檔 2026-09-01**：依「AGENTS.md 為主」原則，本文件移至 `docs/archive/`，僅作歷史快照保留，不再更新。最新架構以 `AGENTS.md` 為準。
+
 > **⚠️ 歷史快照（pre-manager-refactor）**：本報告撰寫於 Controller 重構前，行列號與行數已失效。請以 AGENTS.md 為架構參考。
 
 產生日期：2026-07-04（最近更新：2026-07-19）

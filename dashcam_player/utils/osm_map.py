@@ -351,13 +351,20 @@ def _read_cache(key: str) -> bytes | None:
 
 
 def _write_cache(key: str, data: bytes) -> None:
-    """寫入 Tile 快取"""
+    """寫入 Tile 快取（執行緒安全，確保目錄存在）"""
     if not _TILE_CACHE_DIR:
         return
-    path = os.path.join(_TILE_CACHE_DIR, key)
+    # 確保快取目錄存在（併發下可能被清理）
     try:
-        with open(path, "wb") as f:
-            f.write(data)
+        os.makedirs(_TILE_CACHE_DIR, exist_ok=True)
+    except OSError:
+        pass
+    path = os.path.join(_TILE_CACHE_DIR, key)
+    # 使用鎖避免併發寫同一檔案時損毀
+    try:
+        with _CACHE_LOCK:
+            with open(path, "wb") as f:
+                f.write(data)
     except OSError as e:
         log.warning(f"OSM 快取寫入失敗: {e}")
 

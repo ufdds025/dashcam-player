@@ -34,6 +34,7 @@ from dashcam_player.utils.ffmpeg import ffprobe_json, find_ffmpeg
 from dashcam_player.utils.gps_ocr import GPSOCR
 from dashcam_player.utils.gps_roi_detector import GPSROIDetector
 from dashcam_player.utils.log import get_logger
+from dashcam_player.utils.pts_loader import get_reliable_fps_count
 
 if TYPE_CHECKING:
     from dashcam_player.config.settings import AppSettings
@@ -141,7 +142,7 @@ class GPSDetector:
     """快速偵測影片是否包含 GPS 資料。
 
     偵測順序：外部檔案 → 內嵌 metadata → (選擇性) OCR。
-    OCR 為昂貴操作（啟動 Tesseract 需載入 tessdata），預設 skip。
+    OCR 為昂貴操作（PaddleOCR 需載入模型），預設 skip。
     """
 
     def __init__(self, video_path: str, parser: GPSParser, skip_ocr: bool = True) -> None:
@@ -263,19 +264,20 @@ class GPSTrackExtractor:
     # ---- OCR fallback ----
 
     def _extract_from_ocr(self) -> list[GPSPoint]:
-        log.info("外部 GPS 檔案與內嵌 metadata 均無資料，啟動 Tesseract OCR 辨識...")
+        log.info("外部 GPS 檔案與內嵌 metadata 均無資料，啟動 PaddleOCR 辨識...")
         if not self._parser._ocr:
-            self._parser._ocr = GPSOCR()
+            self._parser._ocr = GPSOCR(app_settings=self._parser._app_settings)
         if self._parser._ocr_roi is not None:
             log.info(f"OCR 提取使用已設定 ROI: {self._parser._ocr_roi}")
         raw_tracks = self._parser._ocr.extract_tracks(
-            self.video_path, interval_sec=1.0, roi=self._parser._ocr_roi
+            self.video_path, interval_sec=1.0, roi=self._parser._ocr_roi,
+            video_width=self._parser._video_width, video_height=self._parser._video_height, file_format=self._parser._file_format
         )
         if not raw_tracks:
             return []
 
         points = [GPSPoint(lat=t["lat"], lon=t["lon"], time=t["time"]) for t in raw_tracks]
-        log.info(f"Tesseract 提取 {len(points)} 個 GPS 軌跡點")
+        log.info(f"PaddleOCR 提取 {len(points)} 個 GPS 軌跡點")
         return points
 
 
@@ -326,7 +328,7 @@ class GPSParser:
         return self._extraction_attempted
 
     def close_ocr(self) -> None:
-        """釋放 OCR 資源（Tesseract 進程為無狀態，此處僅清理內部參照）"""
+        """釋放 OCR 資源（PaddleOCR 模型常駐記憶體，此處僅清理內部參照）"""
         if self._ocr:
             self._ocr = None
 
@@ -350,7 +352,7 @@ class GPSParser:
           4. 自動偵測成功 → 儲存設定供後續使用
           5. 自動偵測失敗 → 記錄 _roi_auto_failed，供 UI 觸發手動設定
         """
-        log.info("正在啟動文字辨識引擎 (Tesseract)...")
+        log.info("正在啟動文字辨識引擎 (PaddleOCR)...")
         caps: list = []
         try:
             import os
@@ -367,6 +369,11 @@ class GPSParser:
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # 檔頭損壞的 AVI（宣稱 600fps/26477 幀，實際 5fps/223 幀）會讓取樣
+            # 位置落在不存在的幀上 → 以 ffprobe 的實際資料取代檔頭值
+            reliable = get_reliable_fps_count(self.video_path)
+            if reliable is not None:
+                fps, total_frames = reliable
             fmt = os.path.splitext(self.video_path)[1]
             self._video_width = w
             self._video_height = h
@@ -404,20 +411,21 @@ class GPSParser:
                     )
                     coord = ocr.ocr_frame(frame, roi=roi)
                     if coord is None:
-                        log.info(f"OCR 偵測：ROI 失敗，全畫面重試")
+                        log.info("OCR 偵測：ROI 失敗，全畫面重試")
                         coord = ocr.ocr_frame(frame)
                         if coord is not None:
-                            log.info(f"OCR 偵測：全畫面成功，後續改用全畫面")
+                            log.info("OCR 偵測：全畫面成功，後續改用全畫面")
                             self._ocr_roi = None
                     else:
-                        log.info(f"OCR 偵測：ROI 成功")
+                        log.info("OCR 偵測：ROI 成功")
                 else:
-                    log.info(f"OCR 偵測：無已知 ROI，全畫面掃描")
+                    log.info("OCR 偵測：無已知 ROI，全畫面掃描")
                     coord = ocr.ocr_frame(frame)
 
                 if coord is not None:
                     log.info(f"OCR 偵測到 GPS (frame {idx}): lat={coord[0]}, lon={coord[1]}")
                     self._ocr = ocr
+                    self._has_gps = True
                     return True
                 else:
                     log.info(f"OCR 偵測：幀 {idx} 未偵測到 GPS 座標")
@@ -446,7 +454,7 @@ class GPSParser:
                     log.info(f"GPS ROI 自動偵測成功並已儲存: {new_setting.key}")
                     self._ocr_roi = result.detected_roi
                     # 用新 ROI 再試一次
-                    ocr2 = GPSOCR()
+                    ocr2 = GPSOCR(app_settings=self._app_settings)
                     cap2 = open_video_capture(self.video_path)
                     if cap2.isOpened():
                         caps.append(cap2)
@@ -461,6 +469,7 @@ class GPSParser:
                                         f"ROI 偵測後 OCR 成功 (frame {idx}): {coord2[0]}, {coord2[1]}"
                                     )
                                     self._ocr = ocr2
+                                    self._has_gps = True
                                     return True
 
             # 步驟 4: 全部失敗
@@ -486,7 +495,7 @@ class GPSParser:
         """提取所有 GPS 軌跡點
 
         若初始偵測時跳過了 OCR (skip_ocr=True)，但外部檔案與內嵌 metadata
-        皆無 GPS，則在此時才執行 OCR — 確保 Tesseract 不被非必要載入。
+        皆無 GPS，則在此時才執行 OCR — 確保 PaddleOCR 不被非必要載入。
         """
         if self._tracks:
             return self._tracks.copy()
@@ -665,11 +674,11 @@ class GPSParser:
                     lon = -lon
 
                 alt = float(parts[9]) if parts[9] else None
-                
+
                 # GGA sentence: parts[7] = satellites, parts[8] = HDOP
                 satellites = int(parts[7]) if parts[7] else None
                 hdop = float(parts[8]) if parts[8] else None
-                
+
                 return GPSPoint(lat=lat, lon=lon, time=0.0, altitude=alt, hdop=hdop, satellites=satellites)
 
             elif line.startswith(("$GPRMC", "$GNRMC")) and len(parts) >= 13:

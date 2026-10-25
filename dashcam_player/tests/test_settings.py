@@ -177,3 +177,50 @@ class TestCoerceByFieldType:
         from dashcam_player.config.settings import _coerce_by_field_type
 
         assert _coerce_by_field_type("MP4", "str") == "MP4"
+
+
+class TestSpeedRoiHoodTop:
+    """SpeedROI hood_top_y 存取（Phase C：跨機器 key 撞車比對用）。"""
+
+    def test_roundtrip(self) -> None:
+        from dashcam_player.models.speed_roi import SpeedROISetting
+
+        s = AppSettings()
+        s.save_speed_roi(SpeedROISetting(
+            resolution_w=2560, resolution_h=1440, file_format="avi",
+            roi_x=0.42, roi_y=0.55, roi_w=0.40, roi_h=0.10,
+            hood_top_y=0.653,
+        ))
+        loaded = s.load_speed_roi(2560, 1440, "avi")
+        assert loaded is not None
+        assert loaded.hood_top_y == pytest.approx(0.653)
+
+    def test_legacy_missing_key_returns_none(self) -> None:
+        """舊存檔無 hood_top_y key → None，不影響舊框載入。"""
+        from dashcam_player.models.speed_roi import SpeedROISetting
+
+        s = AppSettings()
+        s.save_speed_roi(SpeedROISetting(
+            resolution_w=2560, resolution_h=1440, file_format="avi",
+            roi_x=0.42, roi_y=0.55, roi_w=0.40, roi_h=0.10,
+        ))
+        # 模擬舊存檔：刪掉 hood key（save 時本來就不寫 None）
+        s._store.remove("speed_roi/2560x1440_AVI/hood_top_y")
+        loaded = s.load_speed_roi(2560, 1440, "avi")
+        assert loaded is not None
+        assert loaded.hood_top_y is None
+        assert loaded.roi_x == pytest.approx(0.42)
+
+    def test_corrupted_value_returns_none(self) -> None:
+        s = AppSettings()
+        from dashcam_player.models.speed_roi import SpeedROISetting
+
+        s.save_speed_roi(SpeedROISetting(
+            resolution_w=2560, resolution_h=1440, file_format="avi",
+            roi_x=0.42, roi_y=0.55, roi_w=0.40, roi_h=0.10,
+            hood_top_y=0.653,
+        ))
+        s._store.setValue("speed_roi/2560x1440_AVI/hood_top_y", "爛掉")
+        loaded = s.load_speed_roi(2560, 1440, "avi")
+        assert loaded is not None
+        assert loaded.hood_top_y is None

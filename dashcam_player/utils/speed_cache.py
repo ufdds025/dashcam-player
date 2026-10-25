@@ -9,9 +9,7 @@ import hashlib
 import json
 import os
 import tempfile
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
 from dashcam_player.models.speed import SpeedTrack
 from dashcam_player.utils.log import get_logger
@@ -48,11 +46,11 @@ def _compute_settings_hash(settings: dict) -> str:
 
 def load_speedtrack(video_path: str, settings: dict | None = None) -> SpeedTrack | None:
     """載入快取的 SpeedTrack
-    
+
     Args:
         video_path: 影片路徑
         settings: 當前掃描設定 (用於驗證快取有效性)
-    
+
     Returns:
         SpeedTrack 或 None (快取未命中/失效)
     """
@@ -60,22 +58,22 @@ def load_speedtrack(video_path: str, settings: dict | None = None) -> SpeedTrack
         settings_hash = _compute_settings_hash(settings) if settings else ""
         key = _cache_key(video_path, settings_hash)
         path = _cache_path(key)
-        
+
         if not path.exists():
             return None
-        
-        with open(path, "r", encoding="utf-8") as f:
+
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        
+
         # 驗證快取內容
         if data.get("settings_hash") != settings_hash:
             log.info(f"SpeedTrack 快取設定不符，忽略: {video_path}")
             return None
-        
+
         track = SpeedTrack.from_dict(data["track"])
         log.info(f"SpeedTrack 快取命中: {video_path} ({len(track.points)} points)")
         return track
-        
+
     except (OSError, json.JSONDecodeError, KeyError) as e:
         log.warning(f"SpeedTrack 快取讀取失敗: {e}")
         return None
@@ -87,18 +85,18 @@ def save_speedtrack(video_path: str, track: SpeedTrack, settings: dict | None = 
         settings_hash = _compute_settings_hash(settings) if settings else ""
         key = _cache_key(video_path, settings_hash)
         path = _cache_path(key)
-        
+
         data = {
             "settings_hash": _compute_settings_hash(settings) if settings else "",
             "track": track.to_dict(),
         }
-        
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
-        
+
         log.info(f"SpeedTrack 快取已儲存: {video_path}")
         return True
-        
+
     except OSError as e:
         log.warning(f"SpeedTrack 快取寫入失敗: {e}")
         return False
@@ -106,14 +104,14 @@ def save_speedtrack(video_path: str, track: SpeedTrack, settings: dict | None = 
 
 def clear_speed_cache() -> int:
     """清除所有速度快取
-    
+
     Returns:
         刪除的檔案數
     """
     cache_dir = Path(tempfile.gettempdir()) / "dashcam_speed_cache"
     if not cache_dir.exists():
         return 0
-    
+
     count = 0
     for f in cache_dir.glob("*.speedtrack.json"):
         try:
@@ -130,7 +128,7 @@ def get_cache_stats() -> dict:
     cache_dir = Path(tempfile.gettempdir()) / "dashcam_speed_cache"
     if not cache_dir.exists():
         return {"count": 0, "size_bytes": 0}
-    
+
     count = 0
     size = 0
     for f in cache_dir.glob("*.speedtrack.json"):

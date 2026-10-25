@@ -231,6 +231,11 @@ class TestMatchGpsText:
             ("N24.338535 E120.455958", 24.338535, 120.455958),  # 前綴格式
             ("S24.338535 W120.455958", -24.338535, -120.455958),
             ("GPS: 12.50S , 70.25W speed", -12.5, -70.25),
+            # PaddleOCR 連讀（無空格）
+            ("24.068061N120.358015E102Km/h", 24.068061, 120.358015),
+            ("24.084121N120.312459E98Km/h", 24.084121, 120.312459),
+            # PaddleOCR 行序顛倒（經度在前緯度在後）
+            ("120.312459E 24.084121N", 24.084121, 120.312459),
         ],
     )
     def test_valid_formats(self, text: str, lat: float, lon: float) -> None:
@@ -299,4 +304,82 @@ class TestOsmCacheCleanup:
         (tmp_path / "osm_1.png").write_bytes(b"x")
         assert osm.cleanup_cache(force=True) == 2
         assert list(tmp_path.iterdir()) == []
+
+
+class TestLinearFallback:
+    """pts_loader._linear_fallback 交叉驗證邏輯"""
+
+    def test_strategy_b_corrects_fps(self, monkeypatch) -> None:
+        """r_frame_rate 錯誤但 nb_frames/format_duration 推算 fps 合理 → 策略 B"""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from dashcam_player.utils.pts_loader import _linear_fallback
+
+        # r_frame_rate=31, nb_frames=26477, format_duration=44.1
+        # corrected_fps_b = 26477/44.1 = 600.4 → >120, 策略 B 被拒
+        # 但改用 nb_frames=223, fps=5 時: corrected_fps_b = 223/44.1 = 5.06 → 合理
+        fake_data = {
+            "streams": [{"r_frame_rate": "31/1", "nb_frames": "223"}]
+        }
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(fake_data).encode()
+
+        with patch("dashcam_player.utils.pts_loader.subprocess.run", return_value=mock_result):
+            result = _linear_fallback("dummy.avi", "/ffprobe", 10.0, format_duration=44.1)
+
+        # fps 修正為 ~5.06，nb_frames 保持 223
+        assert len(result.pts_list) == 223
+        assert result.pts_list[1] - result.pts_list[0] == pytest.approx(1.0 / 5.06, rel=0.01)
+
+    def test_strategy_a_corrects_nb_frames(self, monkeypatch) -> None:
+        """nb_frames 錯誤但 format_duration * fps 推算合理 → 策略 B (fps 修正)"""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from dashcam_player.utils.pts_loader import _linear_fallback
+
+        # r_frame_rate=30, nb_frames=1800, format_duration=44.1
+        # nb_frames=1800 < max_reasonable(5292) → 通過合理性檢查
+        # reported_duration = 1800/30 = 60s vs actual 44.1s → >20% 差距
+        # corrected_fps_b = 1800/44.1 = 40.8 → 在 1~120 範圍內，走 Strategy B
+        fake_data = {
+            "streams": [{"r_frame_rate": "30/1", "nb_frames": "1800"}]
+        }
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(fake_data).encode()
+
+        with patch("dashcam_player.utils.pts_loader.subprocess.run", return_value=mock_result):
+            result = _linear_fallback("dummy.avi", "/ffprobe", 10.0, format_duration=44.1)
+
+        # Strategy B 將 fps 修正為 1800/44.1 = 40.8，nb_frames 保持 1800
+        assert len(result.pts_list) == 1800
+        corrected_fps = 1800 / 44.1
+        assert result.pts_list[1] - result.pts_list[0] == pytest.approx(1.0 / corrected_fps, rel=0.01)
+
+    def test_both_wrong_returns_empty(self, monkeypatch) -> None:
+        """r_frame_rate 與 nb_frames 皆錯誤，修正後仍不合理 → 回傳空結果"""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from dashcam_player.utils.pts_loader import _linear_fallback
+
+        # r_frame_rate=200/1, nb_frames=26477, format_duration=44.1
+        # reported_duration = 26477/200 = 132.4s vs actual 44.1s → >20% ✓
+        # corrected_fps_b = 26477/44.1 = 600.4 → >120, 拒絕 B
+        # corrected_nb_a = int(44.1*200) = 8820, implied_fps = 8820/44.1 = 200 → >120, 拒絕 A
+        fake_data = {
+            "streams": [{"r_frame_rate": "200/1", "nb_frames": "26477"}]
+        }
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(fake_data).encode()
+
+        with patch("dashcam_player.utils.pts_loader.subprocess.run", return_value=mock_result):
+            result = _linear_fallback("dummy.avi", "/ffprobe", 10.0, format_duration=44.1)
+
+        assert result.pts_list == []
+        assert result.quality == "UNSAFE"
 

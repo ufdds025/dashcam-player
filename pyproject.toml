@@ -82,6 +82,8 @@ disable_error_code = ["misc"]
 module = [
     "dashcam_player.tests.test_cv_utils",
     "dashcam_player.tests.test_performance",
+    "dashcam_player.tests.test_hood_detector",
+    "dashcam_player.tests.test_marking_detector",
 ]
 disable_error_code = ["attr-defined"]
 
@@ -89,3 +91,13 @@ disable_error_code = ["attr-defined"]
 [[tool.mypy.overrides]]
 module = "dashcam_player.tests.conftest"
 disable_error_code = ["attr-defined"]
+
+# PyQt5 stub 缺 QGraphicsItem / Qt enum 屬性
+[[tool.mypy.overrides]]
+module = "dashcam_player.ui.dialogs.speed_roi_adjust"
+disable_error_code = ["attr-defined", "union-attr"]
+
+# cv2.polylines 單通道色碼不在 stubs overload（lane_mask 光柵化）
+[[tool.mypy.overrides]]
+module = "dashcam_player.utils.lane_mask"
+disable_error_code = ["call-overload"]
