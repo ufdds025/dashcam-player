@@ -177,3 +177,80 @@ class TestCoerceByFieldType:
         from dashcam_player.config.settings import _coerce_by_field_type
 
         assert _coerce_by_field_type("MP4", "str") == "MP4"
+
+
+class TestSpeedRoiHoodTop:
+    """SpeedROI hood_top_y 存取（Phase C：跨機器 key 撞車比對用）。"""
+
+    def test_roundtrip(self) -> None:
+        from dashcam_player.models.speed_roi import SpeedROISetting
+
+        s = AppSettings()
+        s.save_speed_roi(SpeedROISetting(
+            resolution_w=2560, resolution_h=1440, file_format="avi",
+            roi_x=0.42, roi_y=0.55, roi_w=0.40, roi_h=0.10,
+            hood_top_y=0.653,
+        ))
+        loaded = s.load_speed_roi(2560, 1440, "avi")
+        assert loaded is not None
+        assert loaded.hood_top_y == pytest.approx(0.653)
+
+    def test_legacy_missing_key_returns_none(self) -> None:
+        """舊存檔無 hood_top_y key → None，不影響舊框載入。"""
+        from dashcam_player.models.speed_roi import SpeedROISetting
+
+        s = AppSettings()
+        s.save_speed_roi(SpeedROISetting(
+            resolution_w=2560, resolution_h=1440, file_format="avi",
+            roi_x=0.42, roi_y=0.55, roi_w=0.40, roi_h=0.10,
+        ))
+        # 模擬舊存檔：刪掉 hood key（save 時本來就不寫 None）
+        s._store.remove("speed_roi/2560x1440_AVI/hood_top_y")
+        loaded = s.load_speed_roi(2560, 1440, "avi")
+        assert loaded is not None
+        assert loaded.hood_top_y is None
+        assert loaded.roi_x == pytest.approx(0.42)
+
+    def test_corrupted_value_returns_none(self) -> None:
+        s = AppSettings()
+        from dashcam_player.models.speed_roi import SpeedROISetting
+
+        s.save_speed_roi(SpeedROISetting(
+            resolution_w=2560, resolution_h=1440, file_format="avi",
+            roi_x=0.42, roi_y=0.55, roi_w=0.40, roi_h=0.10,
+            hood_top_y=0.653,
+        ))
+        s._store.setValue("speed_roi/2560x1440_AVI/hood_top_y", "爛掉")
+        loaded = s.load_speed_roi(2560, 1440, "avi")
+        assert loaded is not None
+        assert loaded.hood_top_y is None
+
+
+class TestSpeedSettingsEnabled:
+    """SpeedSettings.enabled 預設值與舊存檔回讀（R4 驗收）。"""
+
+    def test_default_is_false(self) -> None:
+        """SpeedSettings() 預設 enabled is False（省資源預設）。"""
+        from dashcam_player.models.capture_settings import SpeedSettings
+
+        settings = SpeedSettings()
+        assert settings.enabled is False
+
+    def test_legacy_true_roundtrip(self) -> None:
+        """舊存檔 enabled=True 讀回仍為 True（QSettings bool 字串還原）。"""
+        s = AppSettings()
+        # 直接寫入舊版 key 模擬舊存檔
+        s._store.setValue("capture/enabled", "true")
+        s._store.sync()
+
+        loaded = s.load_capture_settings()
+        assert loaded.speed.enabled is True
+
+    def test_false_roundtrip(self) -> None:
+        """存 False 讀回仍為 False。"""
+        s = AppSettings()
+        s._store.setValue("capture/enabled", "false")
+        s._store.sync()
+
+        loaded = s.load_capture_settings()
+        assert loaded.speed.enabled is False

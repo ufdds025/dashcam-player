@@ -169,11 +169,66 @@ def preprocess_clahe_otsu(gray: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """CLAHE 增強 + Otsu 二值化（GPS OCR / ROI 偵測共用前處理）。
 
     回傳 ``(enhanced, binary)``：enhanced 為 CLAHE 灰階，binary 為 Otsu 二值化結果。
+    clipLimit=1.0：較低的對比度限制，避免白字與亮天空在均衡化後亮度趨同。
     """
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return enhanced, binary
+
+
+# 白字黑框（white text with black stroke）專用高門檻隔離
+# 白字亮度接近 255，黑框接近 0；在白底（天空/過曝）場景下 Otsu 會把白字與白底合併
+# 導致文字熔入背景。高門檻（≈200）可精準隔離白字內核，再反相為黑字白底供 OCR
+# 擴充至 180/220 以覆蓋陰天 180 與過曝 210 背景的邊界情況
+WHITE_TEXT_THRESHOLDS: tuple[int, ...] = (200, 190, 210, 180, 220)
+# 黑框隔離（白字黑框的另一半特徵）：用於白底過曝時白核與天空同亮無法分離，
+# 此時黑框（0）仍與背景（200-210）有明顯對比
+BLACK_BORDER_THRESH: int = 60
+
+
+def white_text_mask(gray: np.ndarray, thresh: int = 200) -> np.ndarray:
+    """高門檻二值化隔離白字（白字白底 → 白字黑底）。
+
+    回傳白字為 255、背景為 0 的 mask。適用於白字黑框的 GPS 疊加文字。
+    """
+    _, mask = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+    return mask
+
+
+def white_text_inverted(gray: np.ndarray, thresh: int = 200) -> np.ndarray:
+    """高門檻 + 反相（白字黑底 → 黑字白底），直接餵給 OCR。
+
+    OCR 引擎偏好黑字白底；白字直接餵入辨識率極低，反相後大幅提升。
+    """
+    return 255 - white_text_mask(gray, thresh)
+
+
+def adaptive_white_text_inverted(gray: np.ndarray, block_size: int = 31, C: int = -15) -> np.ndarray:
+    """自適應閾值 + 反相，對混合亮/暗背景的白字特別有效。
+
+    當 ROI 同時包含亮天空 (>180) 與暗樹木 (<80) 時，
+    全域閾值無法兼顾兩區，自適應閾值以局部區塊計算閾值，
+    可在每個區域分離白字與背景。
+    回傳黑字白底（OCR 引擎偏好）。
+    """
+    # 自適應二值化：對亮區用較高閾值，暗區用較低閾值
+    adaptive = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, C
+    )
+    # adaptive 已是白字黑底（白字=255），反相為黑字白底
+    return 255 - adaptive
+
+
+def black_border_mask(gray: np.ndarray, thresh: int = 60) -> np.ndarray:
+    """低門檻隔離黑框（黑框白底 → 白框黑底）。
+
+    白字黑框在亮天空下，白核與天空同亮（200 vs 255）難以分離，
+    但黑框（0）與天空（200）對比極大，低門檻可穩定提取黑框輪廓，
+    供 ROI 偵測分支使用（膨脹後可還原文字行級 bbox）。
+    """
+    _, mask = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY_INV)
+    return mask
 
 
 def sample_frame_indices(total_frames: int, fps: float) -> list[int]:
@@ -186,36 +241,131 @@ def sample_frame_indices(total_frames: int, fps: float) -> list[int]:
     return indices
 
 
+_CN_FONT_CACHE: dict[int, object] = {}
+_CN_FONT_CANDIDATES = [
+    r"C:\Windows\Fonts\msjh.ttc",
+    r"C:\Windows\Fonts\msjhbd.ttc",
+    r"C:\Windows\Fonts\mingliu.ttc",
+    r"C:\Windows\Fonts\NotoSansTC-Regular.otf",
+    r"C:\Windows\Fonts\NotoSansCJKtc-Regular.ttf",
+    r"/System/Library/Fonts/PingFang.ttc",
+    r"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+]
+
+
+def _get_cn_font(size: int) -> object | None:  # type: ignore[no-untyped-def]
+    """取得中文字型（PIL），自動遍歷系統候選，無則退回預設。"""
+    if size in _CN_FONT_CACHE:
+        return _CN_FONT_CACHE[size]
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    for p in _CN_FONT_CANDIDATES:
+        if os.path.exists(p):
+            try:
+                f = ImageFont.truetype(p, size)  # type: ignore[assignment]
+                _CN_FONT_CACHE[size] = f
+                return f
+            except Exception:
+                continue
+    try:
+        f = ImageFont.load_default()  # type: ignore[assignment]
+        _CN_FONT_CACHE[size] = f  # type: ignore[assignment]
+        return f
+    except Exception:
+        return None
+
+
+def put_text_cn(
+    frame: np.ndarray,
+    text: str,
+    org: tuple[int, int],
+    font_size: int = 20,
+    color: tuple[int, int, int] = (255, 255, 255),
+    stroke_color: tuple[int, int, int] | None = (0, 0, 0),
+    stroke_width: int = 2,
+) -> np.ndarray:
+    """在 BGR frame 上繪製中文（PIL），失敗時退回 cv2.putText（僅 ASCII）。"""
+    # 純 ASCII 且無中文字符時直接用 cv2（效能佳，無需 PIL 轉換）
+    try:
+        text.encode("ascii")
+        is_ascii = True
+    except UnicodeEncodeError:
+        is_ascii = False
+    if is_ascii:
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = font_size / 30.0
+        thickness = max(1, font_size // 15)
+        x, y = org
+        if stroke_color is not None:
+            cv2.putText(frame, text, (x, y), font, scale, stroke_color, thickness + 1, cv2.LINE_AA)
+        cv2.putText(frame, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
+        return frame
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+        return frame
+    pil_font = _get_cn_font(font_size)
+    if pil_font is None:
+        cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+        return frame
+    # BGR → RGB PIL
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(pil)
+    x, y = org
+    # PIL 的 y 為 baseline 上方，需微調
+    if stroke_color is not None:
+        # stroke 外框
+        draw.text((x, y), text, font=pil_font, fill=stroke_color, stroke_width=stroke_width, stroke_fill=stroke_color)  # type: ignore[arg-type]
+    draw.text((x, y), text, font=pil_font, fill=color)  # type: ignore[arg-type]
+    # RGB → BGR
+    res = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+    np.copyto(frame, res)
+    return frame
+
+
 def overlay_gps_text(frame: np.ndarray, gps_coord: tuple) -> np.ndarray:
     frame = frame.copy()
     lat, lon = gps_coord
     text = f"GPS: {lat:.6f}, {lon:.6f}"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.6
-    thickness = 2
     h, w = frame.shape[:2]
-    text_size = cv2.getTextSize(text, font, scale, thickness)[0]
+    # 先以 cv2 估算文字寬度以決定 tx，實際繪製走 put_text_cn（支援中文環境不亂碼）
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size = cv2.getTextSize(text, font, 0.6, 2)[0]
     tx = w - text_size[0] - 10
     ty = h - 15
-    cv2.putText(frame, text, (tx, ty), font, scale, (255, 255, 255), thickness + 1, cv2.LINE_AA)
-    cv2.putText(frame, text, (tx, ty), font, scale, (0, 0, 0), thickness, cv2.LINE_AA)
-    return frame
+    return put_text_cn(frame, text, (tx, ty), font_size=18, color=(0, 0, 0), stroke_color=(255, 255, 255), stroke_width=2)
 
 
-def overlay_speed_text(frame: np.ndarray, speed_kmh: float, confidence: float = 0.0) -> np.ndarray:
-    """在畫面右下角疊加速度文字（白字黑框）"""
-    frame = frame.copy()
+def format_speed_label(speed_kmh: float, source: str) -> str:
+    """組合速度標籤字串（供疊加與狀態列共用）。
+
+    Args:
+        source: 速度來源（"vision" / "gps" / 其他），"vision" 時尾部加上「（實驗）」
+    """
     text = f"{speed_kmh:.1f} km/h"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.7
-    thickness = 2
+    if source == "vision":
+        text += "（實驗）"
+    return text
+
+
+def overlay_speed_text(frame: np.ndarray, speed_kmh: float, confidence: float = 0.0, is_vision: bool = False) -> np.ndarray:
+    """在畫面右下角疊加速度文字（白字黑框，中文環境不亂碼）
+
+    Args:
+        is_vision: 是否為視覺測速（實驗功能），若為 True 會在速度後加上「（實驗）」
+    """
+    frame = frame.copy()
+    text = format_speed_label(speed_kmh, "vision" if is_vision else "")
     h, w = frame.shape[:2]
-    text_size = cv2.getTextSize(text, font, scale, thickness)[0]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size = cv2.getTextSize(text, font, 0.7, 2)[0]
     tx = w - text_size[0] - 10
     ty = h - 15
-    cv2.putText(frame, text, (tx, ty), font, scale, (255, 255, 255), thickness + 1, cv2.LINE_AA)
-    cv2.putText(frame, text, (tx, ty), font, scale, (0, 0, 0), thickness, cv2.LINE_AA)
-    return frame
+    return put_text_cn(frame, text, (tx, ty), font_size=22, color=(0, 0, 0), stroke_color=(255, 255, 255), stroke_width=2)
 
 
 def overlay_osm_thumbnail(frame: np.ndarray, osm_bytes: bytes, thumb_size: int = 160) -> np.ndarray:

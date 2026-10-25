@@ -7,6 +7,7 @@ import pytest
 from dashcam_player.utils.cv_utils import (
     apply_resolution,
     decode_fourcc,
+    format_speed_label,
     imwrite_safe,
     open_video_capture,
     overlay_gps_text,
@@ -103,3 +104,27 @@ class TestOpenVideoCapture:
         cap = open_video_capture(str(tmp_path / "no_such_file.mp4"))
         assert not cap.isOpened()
         cap.release()
+
+
+class TestFormatSpeedLabel:
+    """format_speed_label 單元測試（R2 驗收：is_vision=True 時含「實驗」；False 時不含）。"""
+
+    def test_vision_source_has_experiment_label(self) -> None:
+        label = format_speed_label(45.5, "vision")
+        assert "45.5 km/h" in label
+        assert "（實驗）" in label
+
+    def test_gps_source_no_experiment_label(self) -> None:
+        label = format_speed_label(60.0, "gps")
+        assert "60.0 km/h" in label
+        assert "（實驗）" not in label
+
+    def test_empty_source_no_experiment_label(self) -> None:
+        label = format_speed_label(30.2, "")
+        assert "30.2 km/h" in label
+        assert "（實驗）" not in label
+
+    def test_unknown_source_no_experiment_label(self) -> None:
+        label = format_speed_label(55.5, "unknown")
+        assert "55.5 km/h" in label
+        assert "（實驗）" not in label

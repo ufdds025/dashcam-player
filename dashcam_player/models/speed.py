@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
 import time
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -41,7 +40,11 @@ class SpeedPoint:
 
 @dataclass
 class SpeedSettings:
-    """軟體測速設定"""
+    """軟體測速設定（已棄用，統一使用 capture_settings.SpeedSettings）
+
+    保留僅為向後相容，請新程式碼一律 import dashcam_player.models.capture_settings.SpeedSettings
+    預設 False（省資源，手動開啟）。
+    """  # noqa: D400
 
     enabled: bool = False
     distance_per_cycle: float = 10.0
@@ -90,3 +93,13 @@ class SpeedTrack:
             "coverage": self.coverage,
             "status": self.status,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> SpeedTrack:
+        pts = [SpeedPoint.from_dict(p) for p in data.get("points", [])]
+        return cls(
+            points=pts,
+            profile=data.get("profile", "default"),
+            coverage=data.get("coverage", 0.0),
+            status=data.get("status", "OK"),
+        )

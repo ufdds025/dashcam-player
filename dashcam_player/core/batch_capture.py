@@ -15,6 +15,7 @@ from dashcam_player.utils.cv_utils import (
     overlay_osm_thumbnail,
     write_exif_gps,
 )
+from dashcam_player.utils.filename_utils import build_capture_filename
 from dashcam_player.utils.gps_parser import GPSPoint, interpolate_gps
 from dashcam_player.utils.log import get_logger
 from dashcam_player.utils.osm_map import get_static_map
@@ -94,7 +95,6 @@ class BatchCaptureWorker(QThread):
             self.failed.emit(err)
             return
         is_jpeg = self._img_format == "JPEG"
-        ext = "jpg" if is_jpeg else "png"
 
         cap = open_video_capture(self._video_path, self._hw_backends)
 
@@ -107,7 +107,8 @@ class BatchCaptureWorker(QThread):
 
             # 無條件捨去，確保實際取樣率不高於設定的 capture_fps
             # （round 的銀行家捨入在 fps=25, capture_fps=10 時會取 2，變成 12.5fps）
-            step = max(1, int(self._fps / self._capture_fps))
+            # 使用四捨五入避免 29.97/10=2 截斷誤差
+            step = max(1, int(round(self._fps / self._capture_fps)))
             total_groups = max(1, int(math.ceil((self._end_frame - self._start_frame + 1) / step)))
             log.info(
                 f"批次截圖：fps={self._fps}  capture_fps={self._capture_fps}  step={step}  總群組={total_groups}"
@@ -170,8 +171,16 @@ class BatchCaptureWorker(QThread):
                         if osm_bytes:
                             best_frame = overlay_osm_thumbnail(best_frame, osm_bytes)
 
-                    filename = f"{self._prefix}_frame{best_idx:06d}.{ext}"
+                    filename = build_capture_filename(
+                        self._video_path, best_idx, self._prefix, self._img_format
+                    )
                     path = os.path.join(self._output_dir, filename)
+
+                    # 防重複：同來源+同幀的檔名確定性相同，已存在則跳過（不產生第二份副本）
+                    if os.path.exists(path):
+                        log.info(f"已存在，跳過（防重複）: {path}")
+                        self._success_count += 1
+                        continue
 
                     try:
                         if is_jpeg:

@@ -30,14 +30,16 @@ class GPSTemplate:
 
 
 # 預設模板：適用於多數行車紀錄器
+# 修正：左上角 ROI 略向右偏移 0.015（約 28px@1920）以避開左側 A 柱黑邊，
+# 實測該黑邊會讓 white_text_mask 的左側大面積黑塊干擾 OCR，且使用者回報「要靠右一點」。
 _BUILTIN_TEMPLATES: list[GPSTemplate] = [
     GPSTemplate(
         name="左上角（最常見）",
         corner="top_left",
         layout="three_line",
-        roi_x=0.0,
-        roi_y=0.0,
-        roi_w=0.50,
+        roi_x=0.015,
+        roi_y=0.005,
+        roi_w=0.485,
         roi_h=0.15,
         num_lines=3,
     ),

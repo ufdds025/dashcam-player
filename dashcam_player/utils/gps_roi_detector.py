@@ -16,11 +16,16 @@ import numpy as np
 
 from dashcam_player.models.gps_roi import GPSROIDetectionResult
 from dashcam_player.utils.cv_utils import (
+    BLACK_BORDER_THRESH,
+    WHITE_TEXT_THRESHOLDS,
+    black_border_mask,
     open_video_capture,
     preprocess_clahe_otsu,
     sample_frame_indices,
+    white_text_mask,
 )
 from dashcam_player.utils.log import get_logger
+from dashcam_player.utils.pts_loader import get_reliable_fps_count
 
 log = get_logger()
 
@@ -140,6 +145,18 @@ class GPSROIDetector:
         if frame_w <= 0 or frame_h <= 0:
             return None
 
+        # 檔頭損壞的 AVI（宣稱 600fps/26477 幀，實際 5fps/223 幀）會讓取樣
+        # 位置落在不存在的幀上 → 以 ffprobe 的實際資料取代檔頭值
+        reliable = get_reliable_fps_count(video_path)
+        if reliable is not None:
+            fps, total_frames = reliable
+
+        # 檔頭損壞的 AVI（宣稱 600fps/26477 幀，實際 5fps/223 幀）會讓取樣
+        # 位置落在不存在的幀上 → 以 ffprobe 的實際資料取代檔頭值
+        reliable = get_reliable_fps_count(video_path)
+        if reliable is not None:
+            fps, total_frames = reliable
+
         sample_indices = sample_frame_indices(total_frames, fps)
 
         all_gps_bboxes: list[list[list[float]]] = []
@@ -160,8 +177,41 @@ class GPSROIDetector:
             log.info("GPS ROI 自動偵測：未找到 GPS 文字區塊")
             return None
 
-        roi = _compute_union_roi(all_gps_bboxes, frame_w, frame_h)
-        corner = _bbox_to_corner(all_gps_bboxes[0], frame_w, frame_h)
+        # 去重（多門檻會產生重複 bbox）
+        dedup: dict[tuple[int, int, int, int], list[list[float]]] = {}
+        for b in all_gps_bboxes:
+            xs = [p[0] for p in b]
+            ys = [p[1] for p in b]
+            key = (int(min(xs)), int(min(ys)), int(max(xs) - min(xs)), int(max(ys) - min(ys)))
+            dedup[key] = b
+        deduped = list(dedup.values())
+
+        # 按角落分組，選多數決角落避免路面白線等雜訊把 union 拉成全畫面
+        # 實測 captures/dash_20260827_*.png：raw top_left 21 vs bottom 共 15，若全 union 得 (0,0,1,1)
+        # dedup 後因重複 bbox 合併會逆轉多數決（11 vs 7），故以 raw 計數為準決定主角落，
+        # 再對 deduped 過濾得精準 ROI。
+        from collections import Counter
+
+        raw_corners = [_bbox_to_corner(b, frame_w, frame_h) for b in all_gps_bboxes]
+        most_common = Counter(raw_corners).most_common(1)[0][0] if raw_corners else _bbox_to_corner(deduped[0], frame_w, frame_h)
+        filtered = [b for b in deduped if _bbox_to_corner(b, frame_w, frame_h) == most_common]
+        # 若過濾後過少（<2），可能是誤分組，退回全部
+        target_bboxes = filtered if len(filtered) >= 2 else deduped
+
+        roi = _compute_union_roi(target_bboxes, frame_w, frame_h)
+        corner = _bbox_to_corner(target_bboxes[0], frame_w, frame_h)
+        # 使用者回報左上角要「靠右一點」以避開 A 柱黑邊（見截圖左緣黑塊），
+        # 若自動偵測的 ROI 貼齊左邊界 (x<0.02)，向右微調 0.015 並相應縮寬，保持右邊界不動
+        if corner == "top_left" and roi[0] < 0.02:
+            shift = 0.015
+            # 確保不超出右邊界
+            new_x = roi[0] + shift
+            new_w = max(0.05, roi[2] - shift)
+            # 右邊界 = 原 x+w 保持不變，故 new_w = 原右 - new_x
+            orig_right = roi[0] + roi[2]
+            new_w = max(0.05, orig_right - new_x)
+            roi = (new_x, roi[1], new_w, roi[3])
+            log.info(f"GPS ROI 頂左微調向右 {shift:.3f} 以避開 A 柱")
         fmt = os.path.splitext(video_path)[1]
 
         log.info(
@@ -186,44 +236,84 @@ class GPSROIDetector:
         """使用 OpenCV 影像處理偵測文字區域
 
         透過二值化、膨脹與輪廓檢測尋找可能含文字的區域。
+        同時支援：
+          - 傳統 Otsu 分支（黑字白底）
+          - 白字黑框分支（高門檻 200 隔離白字內核，白字白底 → 白字黑底）
+            實測：白字(255)黑框(0)在白底天空(≈190)場景，Otsu 二值化會把
+            天空判為白，文字熔入背景導致 0 個 bbox；高門檻分支在
+            captures/dash_20260827_*.png 上可穩定產出 5 個 GPS 相關 bbox。
+          - HSV 白色遮罩分支（V>200,S<40，對過曝/偏色白字補強）
+        三分支結果合併後由上層 _is_gps_bbox 統一過濾。
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frame_h, frame_w = frame.shape[:2]
+        all_bboxes: list[list[list[float]]] = []
 
+        def _collect(mask: np.ndarray, dilated: np.ndarray) -> None:
+            contours, _ = cv2.findContours(
+                dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area < 50 or area > frame_w * frame_h * 0.15:
+                    continue
+                x, y, w, h = cv2.boundingRect(cnt)
+                if w == 0 or h == 0:
+                    continue
+                aspect_ratio = w / h if h > 0 else 0
+                if aspect_ratio < 1.5 and aspect_ratio > 0:
+                    if area < 200:
+                        continue
+                if w < 10 or h < 10:
+                    continue
+                all_bboxes.append([
+                    [float(x), float(y)],
+                    [float(x + w), float(y)],
+                    [float(x + w), float(y + h)],
+                    [float(x), float(y + h)],
+                ])
+
+        # --- 分支 A：傳統 Otsu（黑字白底 / 通用，含反相分支以涵蓋黑字/白字兩極性）---
         _, binary = preprocess_clahe_otsu(gray)
-
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         dilated = cv2.dilate(binary, kernel, iterations=2)
+        _collect(binary, dilated)
+        # 反相：處理黑字白底（dummy 測試）或白底黑字以外極性
+        binary_inv = 255 - binary
+        dilated_inv = cv2.dilate(binary_inv, kernel, iterations=2)
+        _collect(binary_inv, dilated_inv)
 
-        contours, _ = cv2.findContours(
-            dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+        # --- 分支 B：白字黑框高門檻（白字亮度 ≈255，背景≈140-190）---
+        # 對每個門檻獨立膨脹並收集，確保 180-210 範圍內的白字皆可捕獲；
+        # 使用 15x5 大核將離散字元合併為行級 bbox，符合 _is_likely_gps_bbox 的
+        # 寬度/高度比例檢查（避免字元級碎片被過濾）。
+        kernel_white = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 5))
+        for thresh in WHITE_TEXT_THRESHOLDS:
+            wm = white_text_mask(gray, thresh)
+            dilated_w = cv2.dilate(wm, kernel_white, iterations=1)
+            _collect(wm, dilated_w)
 
-        frame_h, frame_w = frame.shape[:2]
-        bboxes: list[list[list[float]]] = []
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < 50 or area > frame_w * frame_h * 0.15:
-                continue
+        # --- 分支 C：HSV 白色遮罩（對偏黃/過曝白字補強，灰階門檻可能漏掉）---
+        try:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            hsv_white = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 40, 255]))
+            dilated_hsv = cv2.dilate(hsv_white, kernel_white, iterations=1)
+            _collect(hsv_white, dilated_hsv)
+        except cv2.error:
+            pass
 
-            x, y, w, h = cv2.boundingRect(cnt)
-            if w == 0 or h == 0:
-                continue
-            aspect_ratio = w / h if h > 0 else 0
-            if aspect_ratio < 1.5 and aspect_ratio > 0:
-                if area < 200:
-                    continue
+        # --- 分支 D：黑框低門檻（白字黑框在亮天空下白核與天空同亮，200 閾值失效；
+        # 黑框 0 與天空 200 對比極大，低門檻可穩定提取邊框，膨脹後還原行級 bbox）---
+        try:
+            # 對過曝/陰天亮天空特別有效（bg 200-210 時 white 分支全失效）
+            border = black_border_mask(gray, BLACK_BORDER_THRESH)
+            # 黑框本身為細線，需先膨脹再找輪廓；後續 _is_likely_gps_bbox 會過濾掉 A 柱等大黑塊（bh>0.12）
+            dilated_border = cv2.dilate(border, kernel_white, iterations=1)
+            _collect(border, dilated_border)
+        except cv2.error:
+            pass
 
-            if w < 10 or h < 10:
-                continue
-
-            bboxes.append([
-                [float(x), float(y)],
-                [float(x + w), float(y)],
-                [float(x + w), float(y + h)],
-                [float(x), float(y + h)],
-            ])
-
-        return bboxes
+        return all_bboxes
 
     @staticmethod
     def _is_gps_bbox(

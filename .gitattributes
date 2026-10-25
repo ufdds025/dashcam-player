@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.md text
+*.py text
+*.bat text eol=crlf
+*.AVI binary
+*.avi binary

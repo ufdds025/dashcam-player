@@ -146,8 +146,9 @@ class TestTemplates:
         t = get_template_by_corner("top_left")
         assert t is not None
         assert t.corner == "top_left"
-        assert t.roi_x == 0.0
-        assert t.roi_y == 0.0
+        # 左上角已向右微調 0.015 以避開 A 柱（見 gps_roi_templates.py）
+        assert t.roi_x == 0.015
+        assert t.roi_y == 0.005
 
     def test_get_template_by_corner_missing(self) -> None:
         t = get_template_by_corner("center")
