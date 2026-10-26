@@ -756,7 +756,7 @@ def _draw_overlay(
             # 取得文字實際邊界
             bbox = draw.textbbox((x, y), txt, font=pil_font, stroke_width=2)
             draw.text((x, y), txt, font=pil_font, fill=fill, stroke_width=2, stroke_fill=(0, 0, 0))
-            return max(2, bbox[3] - bbox[1] + 4)  # 高度 + 行距
+            return max(2, int(round(bbox[3] - bbox[1])) + 4)  # 高度 + 行距
 
         if box is not None:
             mid_x = (box[0] + box[2]) // 2

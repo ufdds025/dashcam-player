@@ -290,7 +290,7 @@ class SpeedROIAdjustDialog(QDialog):
         self._scene.clear()
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w = frame.shape[:2]
-        qimg = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888)
+        qimg = QImage(rgb.tobytes(), w, h, rgb.strides[0], QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimg)
 
         image_item = _ImageItem(pixmap)

@@ -27,10 +27,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg libxcb-xinerama0 libgl1 libegl1 libopengl0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-render-util0
 
-      - name: Install Python dependencies
+      - name: Install Python dependencies (core only)
         run: |
           pip install --upgrade pip
-          pip install -r dashcam_player/requirements.txt
+          pip install -r dashcam_player/requirements-core.txt
           pip install pytest ruff mypy
 
       - name: Lint (ruff)

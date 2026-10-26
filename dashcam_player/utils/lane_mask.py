@@ -81,7 +81,7 @@ def mask_to_occupancy(
         return 0.0, 0.0
     div = int(round(bw * min(max(divider_ratio, 0.0), 1.0)))
     div = min(max(div, 0), bw)
-    col_any = (box_mask > 0).any(axis=0)
+    col_any = np.asarray((box_mask > 0).any(axis=0), dtype=bool)
     wl = max(div, 1)
     wr = max(bw - div, 1)
     occ_l = float(np.count_nonzero(col_any[:div])) / wl if div > 0 else 0.0
